@@ -11,5 +11,10 @@
   "whisper_cpp_model": "",
   "faster_whisper_model": "base.en",
   "openai_api_key": "",
-  "advertise": true
+  "advertise": true,
+  "vault_exclude": [
+    "*.secret.md",
+    ".*",
+    ".*/*"
+  ]
 }

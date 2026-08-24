@@ -108,7 +108,9 @@ hand. **Test Mac** confirms the link.
 | `GET /vault/list` | every `.md` under the vault |
 
 Vault paths are resolved and checked against the vault root, so the device
-cannot write outside it.
+cannot write outside it. `vault_exclude` in `config.json` hides notes from the
+handheld entirely — it defaults to `["*.secret.md", ".*", ".*/*"]`, because a
+pocket device is easy to lose and your vault is bigger than what belongs on it.
 
 ## Secrets
 

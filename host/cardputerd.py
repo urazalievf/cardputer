@@ -22,6 +22,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import fnmatch
 import shutil
 import subprocess
 import sys
@@ -42,6 +43,9 @@ DEFAULTS = {
     "vault_subdir": "Cardputer",       # device notes land here
     "daily_dir": "Daily",              # where daily notes live inside the vault
     "daily_format": "%Y-%m-%d",
+    # Notes the handheld must never list or read. A pocket device is easy to
+    # lose, and the vault is bigger than what you want on it.
+    "vault_exclude": ["*.secret.md", ".*", ".*/*"],
     "system_prompt": (
         "You are the assistant inside CardputerOS on a pocket handheld with a "
         "240x135 screen. Reply in PLAIN TEXT only - no markdown, no code fences, "
@@ -232,6 +236,13 @@ def vault_root() -> Path | None:
     return p if p.is_dir() else None
 
 
+def is_excluded(rel: str) -> bool:
+    """True if `rel` (vault-relative, posix) matches any exclusion pattern."""
+    patterns = CFG.get("vault_exclude") or []
+    name = rel.rsplit("/", 1)[-1]
+    return any(fnmatch.fnmatch(rel, p) or fnmatch.fnmatch(name, p) for p in patterns)
+
+
 def safe_vault_path(rel: str) -> Path:
     """Resolve `rel` inside the vault, refusing anything that escapes it."""
     root = vault_root()
@@ -286,6 +297,8 @@ def handle_vault_read(data: dict) -> dict:
         target = safe_vault_path(rel)
     except ValueError as e:
         return {"error": str(e)}
+    if is_excluded(rel):
+        return {"error": "excluded from device access"}
     if not target.is_file():
         return {"error": "not found"}
     return {"response": target.read_text(encoding="utf-8", errors="replace")[:20000]}
@@ -299,8 +312,8 @@ def handle_vault_list(qs: dict) -> dict:
     base = (root / sub) if sub else root
     if not base.is_dir():
         return {"files": []}
-    files = sorted(p.relative_to(root).as_posix()
-                   for p in base.rglob("*.md") if not p.name.startswith("."))
+    files = sorted(rel for rel in (p.relative_to(root).as_posix() for p in base.rglob("*.md"))
+                   if not is_excluded(rel))
     return {"files": files[:500]}
 
 
