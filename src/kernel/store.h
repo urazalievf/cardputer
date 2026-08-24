@@ -15,6 +15,7 @@ void   setStr(const char* key, const String& value);
 int    getInt(const char* key, int def = 0);
 void   setInt(const char* key, int value);
 void   remove(const char* key);
+void   factoryReset();          // wipes cfg, wifi, chat; leaves SD notes alone
 
 // Well-known config keys.
 static const char* K_HOST        = "host";       // companion daemon, e.g. "mac.local"

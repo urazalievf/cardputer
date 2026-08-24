@@ -1,50 +1,35 @@
-// Host-first network brain.
-//
-// Every capability is tried against the companion daemon on your Mac first
-// (free, has your Claude Max subscription and your real filesystem), and falls
-// back to direct cloud APIs when the daemon isn't reachable.
+// The Mac companion daemon: the one peer that has a filesystem, your CLI
+// subscriptions and your Obsidian vault. ai.cpp routes through this for the
+// Host provider; the vault and Claude Code paths are host-only by nature.
 #pragma once
 #include "os.h"
 #include <vector>
 
 namespace cloud {
 
-enum class Source { None, Host, Api };
-
 struct Result {
     bool ok = false;
     String text;
-    Source source = Source::None;
     String error;
-    const char* sourceName() const {
-        return source == Source::Host ? "mac" : source == Source::Api ? "api" : "-";
-    }
 };
 
 void begin();
 
-// --- host daemon ---
-String hostBase();                 // "http://mac.local:8787", or "" if unset
-bool   hostOnline();               // cached, refreshed every few seconds
-bool   pingHost(uint32_t timeoutMs = 1200);
-bool   discoverHost();             // mDNS lookup for _cardputerd._tcp
+String hostBase();
+bool   hostOnline();                 // cached /ping, refreshed every 8s
+bool   pingHost(uint32_t timeoutMs = 1500);
+bool   discoverHost();               // mDNS _cardputerd._tcp
+String hostFeatures();               // human-readable summary from /ping
 
-// --- language model ---
-// `system` may be empty. Host path shells out to the `claude` CLI; API path
-// hits api.anthropic.com with the key stored in NVS.
-Result ask(const String& prompt, const String& system = "", int maxTokens = 400);
+Result hostPost(const String& path, const String& jsonBody, uint32_t timeoutMs = 120000);
+Result hostTranscribe(const int16_t* pcm, size_t samples);
 
-// Full Claude Code: runs in a project directory on the host, with tools.
-// Host-only — returns ok=false when the daemon is unreachable.
-Result code(const String& prompt, const String& project = "");
+// Claude Code / Codex with real tools, in a real project directory.
+Result code(const String& prompt, const String& project = "", const String& backend = "");
 
-// --- speech to text ---
-Result transcribe(const int16_t* pcm, size_t samples);
-
-// --- Obsidian vault (host-only) ---
 Result vaultWrite(const String& path, const String& content, bool append = false);
 Result vaultRead(const String& path);
+Result vaultDailyAppend(const String& content);
 std::vector<String> vaultList(const String& dir = "");
-Result vaultDailyAppend(const String& content);   // append to today's daily note
 
 }  // namespace cloud

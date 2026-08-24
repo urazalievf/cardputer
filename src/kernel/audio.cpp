@@ -14,33 +14,59 @@ static float    s_level = 0.0f;
 static bool     s_micOwnsI2S = false;
 
 static const size_t CHUNK = SAMPLE_RATE / 10;   // 100ms
+static size_t s_reclaimable = 0;
+
+void setReclaimableBytes(size_t bytes) { s_reclaimable = bytes; }
+
+// How much we could capture if we asked right now. Reported before any
+// allocation so the UI can promise a realistic ceiling.
+static size_t plannedSamples() {
+    size_t psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t want = SAMPLE_RATE * 30;
+    if (psram >= want * sizeof(int16_t)) return want;
+    // Leave enough for a TLS handshake (~45KB) plus slack; the caller releases
+    // the canvas first, so count that back in.
+    size_t avail = heap_caps_get_free_size(MALLOC_CAP_INTERNAL) + s_reclaimable;
+    size_t bytes = avail > 72 * 1024 ? avail - 72 * 1024 : 0;
+    if (bytes > 200 * 1024) bytes = 200 * 1024;
+    return bytes / sizeof(int16_t);
+}
+
+bool allocBuffer() {
+    if (s_buf) return true;
+    size_t want = SAMPLE_RATE * 30;
+    if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) >= want * sizeof(int16_t)) {
+        s_buf = (int16_t*)heap_caps_malloc(want * sizeof(int16_t),
+                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_buf) { s_cap = want; return true; }
+    }
+    s_cap = plannedSamples();
+    if (s_cap < SAMPLE_RATE) { s_cap = 0; return false; }     // under a second is useless
+    s_buf = (int16_t*)malloc(s_cap * sizeof(int16_t));
+    if (!s_buf) { s_cap = 0; return false; }
+    return true;
+}
+
+void freeBuffer() {
+    if (!s_buf) return;
+    free(s_buf);
+    s_buf = nullptr;
+    s_cap = 0;
+    s_used = 0;
+}
+
+bool bufferHeld() { return s_buf != nullptr; }
 
 void begin() {
-    // StampS3 has no PSRAM on stock Cardputer; try anyway for ADV / modded units,
-    // then fall back to a slice of internal heap.
-    size_t psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    size_t want = SAMPLE_RATE * 30;             // 30s ceiling
-    if (psram >= want * sizeof(int16_t)) {
-        s_buf = (int16_t*)heap_caps_malloc(want * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (s_buf) s_cap = want;
-    }
-    if (!s_buf) {
-        size_t internalFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-        size_t bytes = internalFree / 2;
-        if (bytes > 160 * 1024) bytes = 160 * 1024;   // leave room for TLS buffers
-        s_cap = bytes / sizeof(int16_t);
-        s_buf = (int16_t*)malloc(s_cap * sizeof(int16_t));
-        if (!s_buf) s_cap = 0;
-    }
     micOn();
-    s_micReady = s_buf && M5Cardputer.Mic.isEnabled();
+    s_micReady = M5Cardputer.Mic.isEnabled();
     // Idle state favours the SD card: most apps read files, few record audio.
     releaseI2S();
 }
 
 bool micReady() { return s_micReady; }
-size_t capacitySamples() { return s_cap; }
-uint32_t capacitySeconds() { return s_cap / SAMPLE_RATE; }
+size_t capacitySamples() { return s_buf ? s_cap : plannedSamples(); }
+uint32_t capacitySeconds() { return capacitySamples() / SAMPLE_RATE; }
 
 // GPIO40 is the I2S bit clock AND the SD clock. Any audio path has to evict
 // the SD card first, and store::sdAcquire() evicts audio in the other
@@ -82,6 +108,7 @@ void speakerOn() {
 void clear() { s_used = 0; s_level = 0.0f; }
 
 void recordStart() {
+    if (!allocBuffer()) { s_recording = false; return; }
     micOn();
     s_used = 0;
     s_level = 0.0f;

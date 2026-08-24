@@ -32,12 +32,20 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 HERE = Path(__file__).resolve().parent
 
 DEFAULTS = {
     "port": 8787,
     "claude_bin": "claude",
+    # Which CLI answers a given `backend` name from the device. Each entry is
+    # the executable plus the args that put it in "one prompt, one answer" mode.
+    "backends": {
+        "claude": {"bin": "claude", "args": ["-p"]},
+        "codex":  {"bin": "codex",  "args": ["exec"]},
+        "gemini": {"bin": "gemini", "args": ["-p"]},
+    },
+    "default_backend": "claude",
     "default_project": str(Path.home()),
     "vault": "",                       # absolute path to your Obsidian vault
     "vault_subdir": "Cardputer",       # device notes land here
@@ -82,32 +90,65 @@ def log(*a):
 # --------------------------------------------------------------------------
 # Claude
 # --------------------------------------------------------------------------
-def run_claude(prompt: str, cwd: str, timeout: int, extra_args: list[str] | None = None) -> str:
-    cmd = [CFG["claude_bin"], "-p", prompt]
-    if extra_args:
-        cmd[1:1] = extra_args
+def resolve_backend(name: str) -> tuple[str, list[str]] | None:
+    """Map a backend name from the device to an executable and its args."""
+    spec = (CFG.get("backends") or {}).get(name)
+    if not spec:
+        return None
+    binary = shutil.which(spec.get("bin", name)) or spec.get("bin", name)
+    return binary, list(spec.get("args") or [])
+
+
+def available_backends() -> list[str]:
+    out = []
+    for name, spec in (CFG.get("backends") or {}).items():
+        if shutil.which(spec.get("bin", name)):
+            out.append(name)
+    return out
+
+
+def run_cli(backend: str, prompt: str, cwd: str, timeout: int) -> str:
+    resolved = resolve_backend(backend)
+    if not resolved:
+        return f"[unknown backend '{backend}'; known: {', '.join(CFG.get('backends') or {})}]"
+    binary, args = resolved
+    cmd = [binary, *args, prompt]
     try:
         r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError:
-        return f"[claude CLI not found at {CFG['claude_bin']}]"
+        return f"[{backend} CLI not found: {binary}]"
     except subprocess.TimeoutExpired:
-        return f"[timed out after {timeout}s]"
+        return f"[{backend} timed out after {timeout}s]"
     out = (r.stdout or "").strip()
     if out:
         return out
     err = (r.stderr or "").strip()
-    return f"[claude produced no output] {err[:200]}"
+    return f"[{backend} produced no output] {err[:200]}"
+
+
+def flatten(messages: list, prompt: str) -> str:
+    """The CLIs take one string. Replay the turns so context survives."""
+    if not messages:
+        return prompt
+    parts = []
+    for m in messages:
+        role = "User" if m.get("role") != "assistant" else "Assistant"
+        parts.append(f"{role}: {m.get('content', '')}")
+    parts.append("Assistant:")
+    return "\n".join(parts)
 
 
 def handle_ask(data: dict) -> dict:
+    messages = data.get("messages") or []
     prompt = (data.get("prompt") or "").strip()
-    if not prompt:
+    body = flatten(messages, prompt).strip()
+    if not body:
         return {"response": "(empty prompt)"}
+    backend = data.get("backend") or CFG["default_backend"]
     system = data.get("system") or CFG["system_prompt"]
-    full = f"{system}\n\n{prompt}"
-    log(f"ask> {prompt[:80]}")
-    # Chat runs read-only in a scratch dir: no tools, no surprises.
-    text = run_claude(full, tempfile.gettempdir(), CFG["claude_timeout"])
+    log(f"ask[{backend}]> {body[-80:]}")
+    # Chat runs in a scratch dir: no project, no tools, no surprises.
+    text = run_cli(backend, f"{system}\n\n{body}", tempfile.gettempdir(), CFG["claude_timeout"])
     log(f"ask< {text[:80]}")
     return {"response": text}
 
@@ -120,8 +161,9 @@ def handle_code(data: dict) -> dict:
     project_path = Path(project).expanduser()
     if not project_path.is_dir():
         return {"error": f"no such directory: {project}"}
-    log(f"code> [{project_path}] {prompt[:70]}")
-    text = run_claude(prompt, str(project_path), CFG["code_timeout"])
+    backend = data.get("backend") or CFG["default_backend"]
+    log(f"code[{backend}]> [{project_path}] {prompt[:70]}")
+    text = run_cli(backend, prompt, str(project_path), CFG["code_timeout"])
     log(f"code< {text[:80]}")
     return {"response": text}
 
@@ -340,10 +382,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         url = urlparse(self.path)
         if url.path == "/ping":
+            backends = available_backends()
             return self._send({
                 "ok": True,
                 "version": VERSION,
-                "claude": bool(shutil.which(CFG["claude_bin"]) or Path(CFG["claude_bin"]).exists()),
+                "claude": "claude" in backends,
+                "backends": backends,
                 "vault": vault_root() is not None,
                 "stt": CFG["stt"],
             })
@@ -427,7 +471,7 @@ def main():
     zc = advertise(port) if CFG["advertise"] else None
 
     log(f"cardputerd {VERSION} on 0.0.0.0:{port}")
-    log(f"claude:  {CFG['claude_bin']}")
+    log(f"agents:  {', '.join(available_backends()) or 'none found'}")
     log(f"vault:   {vault_root() or '(not configured)'}")
     log(f"stt:     {CFG['stt']}")
 

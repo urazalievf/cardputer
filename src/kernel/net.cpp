@@ -75,9 +75,13 @@ String ssid()    { return connected() ? WiFi.SSID() : String(""); }
 String ip()      { return connected() ? WiFi.localIP().toString() : String("0.0.0.0"); }
 int rssi()       { return connected() ? WiFi.RSSI() : -127; }
 
-String rssiBars() {
+int signalBars() {
     int r = rssi();
-    int bars = r > -55 ? 4 : r > -67 ? 3 : r > -78 ? 2 : r > -90 ? 1 : 0;
+    return r > -55 ? 4 : r > -67 ? 3 : r > -78 ? 2 : r > -90 ? 1 : 0;
+}
+
+String rssiBars() {
+    int bars = signalBars();
     String s;
     for (int i = 0; i < 4; i++) s += (i < bars) ? '|' : '.';
     return s;

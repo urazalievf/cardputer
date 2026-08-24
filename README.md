@@ -1,88 +1,118 @@
 # CardputerOS
 
-A small app OS for the **M5Stack Cardputer** (StampS3 / ESP32-S3, 8&nbsp;MB flash).
+A small app OS for the **M5Stack Cardputer** (StampS3 / ESP32-S3, 8&nbsp;MB flash, no PSRAM).
 
-Notes, voice memos with speech-to-text, Claude, Claude Code, an Obsidian
-bridge and a WiFi manager — on a device that fits in a pocket.
+Notes, voice memos with speech-to-text, a chat assistant you can point at any
+vendor, a remote coding agent, an Obsidian bridge, a WiFi manager and BLE — on
+a device that fits in a pocket.
 
 ```
-┌──────────────────────────────────────┐
-│ CardputerOS 0.1.0          |||. 82%  │
-├──────────────────────────────────────┤
-│ 1  Notes      markdown               │
-│ 2  Voice      record + stt           │
-│ 3  Ask        chat claude            │
-│ 4  Code       claude code            │
-│ 5  WiFi       networks               │
-│ 6  Files      sd card                │
-│ 7  Settings   keys + host            │
-├──────────────────────────────────────┤
-│ 14:32  home-wifi  [mac] [sd]         │
-└──────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│ ⌂ CardputerOS 0.2.0     14:32 ▁▃▅▇ ⌁ 82% │
+├──────────────────────────────────────────┤
+│  ┌──────┐┌──────┐┌──────┐┌──────┐        │
+│  │1  ▤  ││2  ⏺  ││3  ▭  ││4  ‹› │        │
+│  │Notes ││Voice ││ Ask  ││ Code │        │
+│  └──────┘└──────┘└──────┘└──────┘        │
+│  ┌──────┐┌──────┐┌──────┐┌──────┐        │
+│  │5  ≋  ││6  ᛒ  ││7  ▢  ││8  ⚙  │        │
+│  │ WiFi ││  BT  ││Files ││ Set  │        │
+│  └──────┘└──────┘└──────┘└──────┘        │
+├──────────────────────────────────────────┤
+│ home-wifi  mac  sd  Claude               │
+└──────────────────────────────────────────┘
 ```
 
-## What it does
+## Apps
 
-| App | |
+| | |
 |---|---|
-| **Notes** | Markdown notes on the SD card — real `.md` files, so the card drops straight into an Obsidian vault. Or press `S` to push one over WiFi. `A` asks Claude about the note you're reading. |
-| **Voice** | `TAB` records with a live level meter, then transcribes. Save as a note, append to today's Obsidian daily note, or send straight to Claude. |
-| **Ask** | Conversational Claude with persistent history. `TAB` dictates instead of typing on 56 tiny keys. |
-| **Code** | Real Claude Code, with tools, running in a project directory on your Mac. The Cardputer is the keyboard and the screen. |
-| **WiFi** | Scan any network, join it, and it's remembered. Rejoins the strongest known network on boot. |
+| **Notes** | Markdown on the SD card — real `.md` files, so the card drops into an Obsidian vault. `S` pushes one over WiFi, `A` asks your assistant about the note you're reading. |
+| **Voice** | `TAB` records with a live level meter, then transcribes. Save as a note, append to today's Obsidian daily note, or send to the assistant. |
+| **Ask** | Conversation with persistent history. `TAB` switches vendor mid-thread, `ctrl+D` dictates instead of typing on 56 tiny keys. |
+| **Code** | A real coding agent — `claude`, `codex` or `gemini` CLI — with tools, in a project directory on your Mac. |
+| **WiFi** | Scan any network, join, remembered. Rejoins the strongest known one on boot. |
+| **Bluetooth** | Scan nearby BLE devices, or become a keyboard: what you type goes to a paired Mac, iPad or phone. |
 | **Files** | SD browser with a text pager. |
-| **Settings** | Host, API keys, model, vault folder, timezone, brightness — all in NVS, none of it in this repo. |
+| **Settings** | Themes, accent colour, brightness, every provider and key, models, daemon, vault, timezone. |
+
+## Any assistant, not just one
+
+Seven backends behind one interface. Nothing above `kernel/ai.cpp` knows which
+one answered.
+
+| Provider | Needs | Notes |
+|---|---|---|
+| **Mac daemon** | the companion running | `claude` / `codex` / `gemini` CLI on your existing subscription — no per-token cost |
+| **Claude** | API key | `api.anthropic.com` |
+| **ChatGPT** | API key | `api.openai.com` |
+| **Gemini** | API key | Google AI |
+| **Groq** | API key | fast open models |
+| **OpenRouter** | API key | anything, one key |
+| **Ollama** | a LAN address | local model, plain HTTP, free, no TLS heap cost |
+
+Pick a default in **Settings → Provider**, or `TAB` inside Ask to switch for one
+question. With **Auto fallback** on, a provider that is down or unconfigured
+falls through to the next one that is ready instead of failing at you.
+
+Speech-to-text routes the same way: local whisper on the Mac, then OpenAI or
+Groq.
+
+## Make it yours
+
+Settings is the point, not an afterthought.
+
+- **7 themes** — Midnight, Terminal, Amber, Nord, Synthwave, Paper, Mono
+- **Accent colour** — a live hue picker with the real UI drawn underneath it
+- **Brightness**, **big text**, **hints on/off**, **status clock**, **sounds**
+- Every API key, every model string, the daemon address, the Bluetooth name,
+  the vault folder and the timezone
+- **Factory reset** that wipes settings and keys but leaves your notes alone
+
+`ctrl+T` cycles themes from anywhere.
+
+## Getting around
+
+| | |
+|---|---|
+| `` ` `` | back — the app closes its sub-view first, then the nav stack, then home |
+| `1`–`8` | launch an app from home |
+| `ctrl`+`1`–`8` | launch from anywhere |
+| `ctrl+H` | home |
+| `ctrl+T` | next theme |
+| `fn` + `; . , /` | arrows (the glyphs on those keycaps) |
+| `ctrl+Backspace` | delete a word |
 
 ## Architecture
 
-Two halves, and the device works standalone if you only build the first one.
-
 ```
-       ┌─────────── Cardputer ───────────┐        ┌──────── your Mac ────────┐
-       │                                 │        │                          │
-       │  apps/   notes voice ask code   │        │   cardputerd.py          │
-       │          wifi files settings    │        │     ├─ claude CLI        │
-       │  ─────────────────────────────  │  WiFi  │     │   (Max plan, free) │
-       │  kernel/ os  ui  net  store     │◄──────►│     ├─ whisper.cpp /     │
-       │          audio  cloud           │        │     │   faster-whisper   │
-       │  ─────────────────────────────  │        │     └─ Obsidian vault    │
-       │  M5Unified / Arduino / ESP-IDF  │        │                          │
-       └─────────────────────────────────┘        └──────────────────────────┘
-                        │
-                        └── falls back to api.anthropic.com + OpenAI Whisper
-                            when the Mac isn't reachable
+       ┌──────────── Cardputer ────────────┐      ┌──────── your Mac ────────┐
+       │ apps/  notes voice ask code wifi  │      │  cardputerd.py           │
+       │        bluetooth files settings   │      │    ├─ claude / codex /   │
+       │ ────────────────────────────────  │ WiFi │    │  gemini CLI         │
+       │ kernel/ os    ui    theme   ai    │◄────►│    ├─ whisper.cpp /      │
+       │         net   bt    store  audio  │      │    │  faster-whisper     │
+       │         cloud                     │      │    └─ Obsidian vault     │
+       │ ────────────────────────────────  │      └──────────────────────────┘
+       │ M5Unified / Arduino / ESP-IDF 5.5 │
+       └───────────────────────────────────┘
+                        └── falls back to Anthropic / OpenAI / Google / Groq /
+                            OpenRouter directly when the Mac isn't reachable
 ```
 
-**Host-first.** Every network capability tries the Mac daemon before the cloud.
-The daemon shells out to your `claude` CLI, so chat and Claude Code cost nothing
-beyond your existing subscription, and it can run whisper locally. When you're
-away from home the device falls back to direct API calls with keys you type into
-Settings. Claude Code is the one host-only feature — it needs a real filesystem.
-
-### Kernel
-
-`src/kernel/` is the whole OS: ~1.5k lines.
-
-- **`os`** — app registry, the event loop, key normalization (arrows live under `fn` + `; . , /`), toasts
-- **`ui`** — word wrap, scrolling lists, text input, modals, the status bar
-- **`net`** — async scan, join, saved-network store, autojoin, NTP
-- **`store`** — NVS config and an SD filesystem, with NVS-backed notes when there's no card
-- **`audio`** — chunked mic capture (mic and speaker share one I2S peripheral), WAV framing
-- **`cloud`** — the host-first client and its API fallbacks
+Rendering goes through a 64KB off-screen sprite pushed in one DMA transfer, so
+frames never tear. Drawing is lazy — nothing repaints until something calls
+`os::invalidate()`, so an idle screen costs one keyboard poll per 12&nbsp;ms.
 
 An app is a class with `draw()` and `onKey()`. Adding one is ~50 lines plus a
-line in [main.cpp](src/main.cpp).
+line in [main.cpp](src/main.cpp). See [docs/architecture.md](docs/architecture.md).
 
 ## Build
 
 ```bash
-pio run -e cardputer -t upload    # hold G38/BOOT while plugging in if it won't enter DFU
-pio device monitor
+pio run -e cardputer -t upload
+pio device monitor          # boot diagnostics re-print whenever you attach
 ```
-
-Toolchain is the [pioarduino](https://github.com/pioarduino/platform-espressif32)
-fork on IDF 5.5 — the stock Espressif platform doesn't cover the StampS3 well.
-Everything is pinned in [platformio.ini](platformio.ini).
 
 ## The Mac daemon
 
@@ -93,40 +123,41 @@ pip install -r requirements.txt        # optional: mDNS + local whisper
 python3 cardputerd.py
 ```
 
-Then on the device: **Settings → Find Mac** (Bonjour), or type the hostname by
-hand. **Test Mac** confirms the link.
+Then **Settings → Find Mac** (Bonjour), or type the address. **Test Mac** confirms.
 
 | Endpoint | |
 |---|---|
-| `GET /ping` | health + which features are live |
-| `POST /ask` | `{prompt, system}` → `claude -p` in a scratch dir |
-| `POST /code` | `{prompt, project}` → `claude -p` in a project dir, with tools |
-| `POST /transcribe` | raw WAV body → whisper.cpp, faster-whisper, or the API |
-| `POST /vault/note` | `{path, content, append}` → writes into the vault |
-| `POST /vault/daily` | `{content}` → appends to today's daily note |
-| `POST /vault/read` | `{path}` → note contents |
-| `GET /vault/list` | every `.md` under the vault |
+| `GET /ping` | health, vault status, which agent CLIs are actually installed |
+| `POST /ask` | `{messages, system, backend}` → the chosen CLI, in a scratch dir |
+| `POST /code` | `{prompt, project, backend}` → the chosen CLI, with tools |
+| `POST /transcribe` | raw WAV → whisper.cpp, faster-whisper, or the API |
+| `POST /vault/note` · `/vault/daily` · `/vault/read` · `GET /vault/list` | Obsidian |
 
-Vault paths are resolved and checked against the vault root, so the device
-cannot write outside it. `vault_exclude` in `config.json` hides notes from the
-handheld entirely — it defaults to `["*.secret.md", ".*", ".*/*"]`, because a
-pocket device is easy to lose and your vault is bigger than what belongs on it.
+Vault paths are resolved against the vault root, so the device cannot write
+outside it. `vault_exclude` hides notes from the handheld entirely — it defaults
+to `["*.secret.md", ".*", ".*/*"]`, because a pocket device is easy to lose and
+your vault is bigger than what belongs on it.
 
 ## Secrets
 
 This repo is public and holds no credentials. WiFi passwords and API keys are
-typed on the device and live in NVS; the daemon reads its own `config.json`,
-which is gitignored. There is no `secrets.h` to fill in.
+typed on the device and live in NVS; the daemon reads its own gitignored
+`config.json`. There is no `secrets.h` to fill in.
 
 ## Hardware notes
 
-Stock Cardputer (StampS3, **no PSRAM**) gets roughly a 5-second mic buffer out
-of internal heap. Boards with PSRAM get 30 seconds — `audio::begin()` probes and
-adapts. SD is on SPI (SCK 40, MISO 39, MOSI 14, CS 12). Mic and speaker share
-I2S, so `audio` hands the peripheral back and forth.
+No PSRAM, so RAM is the real constraint. The audio buffer is allocated only
+while recording and the UI canvas is released to make room, which is what buys
+a ~4&nbsp;second memo on a board with 145&nbsp;KB free. BLE is started only
+while the Bluetooth app is open.
+
+Two Cardputer traps are documented in [docs/hardware.md](docs/hardware.md): the
+SD clock and the I2S bit clock are **the same pin (GPIO40)**, and the SD card
+must be **FAT32** — exFAT enumerates fine and then fails to mount.
 
 ## Status
 
-v0.1 — working scaffold, all seven apps functional. See [docs/roadmap.md](docs/roadmap.md).
+v0.2 — nine apps, seven AI providers, themes, BLE. Builds at 52% flash, 19% RAM.
+See [docs/roadmap.md](docs/roadmap.md).
 
 MIT.

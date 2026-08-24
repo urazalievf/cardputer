@@ -20,6 +20,7 @@ String ssid();
 String ip();
 int rssi();
 String rssiBars();                // "....", "|...", "||..", "|||." style meter
+int    signalBars();              // 0-4, for drawing a meter
 
 // Scanning is async so the UI never freezes.
 void startScan();

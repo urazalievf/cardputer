@@ -1,5 +1,21 @@
 # Architecture
 
+## Layers
+
+```
+apps/     notes voice ask code wifi bluetooth files settings
+          ────────────────────────────────────────────────
+kernel/   os      app registry, nav stack, event loop, global keys
+          ui      canvas rendering, widgets, modals
+          theme   palettes, accent, density — all user-editable, all in NVS
+          ai      provider routing: 7 backends behind one chat()/transcribe()
+          cloud   the Mac daemon: agent CLIs, whisper, Obsidian vault
+          net     scan / join / autojoin / NTP
+          bt      BLE scanner and HID keyboard, started on demand
+          store   NVS config + SD filesystem, GPIO40 arbitration
+          audio   chunked capture, lazily allocated buffer, WAV framing
+```
+
 ## The loop
 
 ```
@@ -58,29 +74,49 @@ registry is its number-key shortcut on the launcher.
 Overridables worth knowing:
 
 - `title()` — status-bar text; default is `name()`. Use it for live counts.
-- `escExits()` — return `false` while a text field is focused, so `` ` `` reaches
-  your `onKey` instead of bouncing to the launcher.
+- `onBack()` — return `true` if you consumed the back key (closed a sub-view,
+  cleared a field). Return `false` and the kernel pops the nav stack for you.
 - `tick()` — called every pass whether or not the screen is dirty.
 
-## Host-first, with fallback
+## Memory arbitration
 
-`cloud::ask()` and `cloud::transcribe()` both follow the same shape:
+Three things want the same internal RAM on a board with no PSRAM:
+
+| | cost | when |
+|---|---|---|
+| UI canvas | 64 KB | always, if it fits |
+| audio buffer | up to 137 KB | only while recording |
+| BLE stack | ~60 KB | only while the Bluetooth app is open |
+| TLS handshake | ~45 KB | during any cloud call |
+
+None of them is permanent. `Voice::start()` calls `ui::releaseCanvas()` before
+`audio::recordStart()` and re-acquires it after transcription; `ui` tells `audio`
+how much it is holding via `setReclaimableBytes()` so the capacity estimate
+reflects what will be available, not what is free right now. That is why the mic
+reports 4 seconds while only 145 KB is free.
+
+## Provider routing, with fallback
+
+`ai::chat()` and `ai::transcribe()` follow the same shape:
 
 ```
-hostOnline()?  ──yes──►  POST to the daemon  ──ok──►  done
-      │                         │
-      no                     failed
-      │                         │
-      └─────────────►  direct API call with the NVS key
+preferred provider  ──ok──►  done
+      │
+   failed / not configured
+      │
+      └── autoFallback? ──► next configured provider ──► ... ──► original error
 ```
 
-`hostOnline()` caches a `/ping` for 8 seconds, so a dead Mac costs one 1.2 s
-timeout per 8 s rather than one per request. A host that answers but errors
-still falls through to the API — a broken daemon shouldn't be worse than no
-daemon.
+Each provider contributes a request builder and a response extractor;
+`postJson()` is shared. Anthropic, Gemini and Ollama have their own shapes;
+OpenAI, Groq and OpenRouter all speak chat-completions, so they share one
+builder. Adding a vendor is a row in `SPECS[]` and, usually, no new code.
 
-`cloud::code()` is the exception: no fallback, because Claude Code without a
-filesystem isn't Claude Code.
+`cloud::hostOnline()` caches a `/ping` for 8 seconds, so a dead Mac costs one
+timeout per 8 s rather than one per request.
+
+`cloud::code()` is the exception: no fallback, because an agent without a
+filesystem isn't an agent.
 
 ## Storage
 
@@ -89,6 +125,7 @@ filesystem isn't Claude Code.
 | Config, API keys | NVS `cfg` | survives reflash, never in git |
 | WiFi networks | NVS `cfg/wifinets`, one JSON array | SSIDs exceed the 15-char NVS key limit |
 | Chat history | NVS `chat/hist` | small, wants to survive reboots |
+| Theme + toggles | NVS `cfg/th*` | the look survives a reflash |
 | Notes | SD `/notes/*.md` | real markdown, Obsidian-ready |
 | Notes (no SD) | NVS `notes` | degraded but doesn't lose thoughts mid-trip |
 

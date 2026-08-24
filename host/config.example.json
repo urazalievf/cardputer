@@ -16,5 +16,26 @@
     "*.secret.md",
     ".*",
     ".*/*"
-  ]
+  ],
+  "default_backend": "claude",
+  "backends": {
+    "claude": {
+      "bin": "claude",
+      "args": [
+        "-p"
+      ]
+    },
+    "codex": {
+      "bin": "codex",
+      "args": [
+        "exec"
+      ]
+    },
+    "gemini": {
+      "bin": "gemini",
+      "args": [
+        "-p"
+      ]
+    }
+  }
 }

@@ -1,52 +1,62 @@
 #include "apps.h"
 #include "../kernel/ui.h"
+#include "../kernel/theme.h"
 #include "../kernel/audio.h"
-#include "../kernel/cloud.h"
+#include "../kernel/ai.h"
 #include "../kernel/store.h"
 #include <Preferences.h>
 #include <ArduinoJson.h>
 
-// Conversational Claude. Routed through the Mac daemon when it's up (your
-// Max subscription, no per-token cost), otherwise straight to the API.
+// Conversational assistant, whichever vendor you pointed it at. TAB swaps
+// provider mid-conversation without losing the thread.
 class Ask : public App {
-    struct Msg { String role, content; };
 public:
     const char* name() const override { return "Ask"; }
-    const char* blurb() const override { return "chat claude"; }
+    const char* blurb() const override { return "chat"; }
+    ui::Icon icon() const override { return ui::Icon::Chat; }
 
     String title() const override {
-        if (busy_) return "Thinking...";
-        return String("Ask  ") + (cloud::hostOnline() ? "[mac]" : "[api]") +
-               "  " + String((int)history_.size()) + " msgs";
+        return String(ai::spec(ai::preferred()).label) + "  " +
+               String((int)history_.size()) + " msgs";
     }
 
-    bool escExits() const override { return input_.length() == 0; }
+    bool onBack() override {
+        if (input_.length()) { input_ = ""; return true; }
+        return false;
+    }
 
     void onEnter() override { load(); os::invalidate(); }
 
     void onKey(const KeyEvent& k) override {
-        if (busy_) return;
-        if (k.tab)   { dictate(); return; }
+        if (k.tab)   { pickProvider(); return; }
         if (k.enter) { send(); return; }
         if (input_.length() == 0) {
             if (k.down) { scroll_++; os::invalidate(); return; }
             if (k.up)   { if (scroll_ > 0) scroll_--; os::invalidate(); return; }
-            if (k.ctrl && k.is('l')) { history_.clear(); lines_.clear(); save(); os::invalidate(); return; }
+            if (k.ctrl && k.is('l')) {
+                history_.clear(); lines_.clear(); save();
+                os::toast("conversation cleared");
+                return;
+            }
+            if (k.ctrl && k.is('d')) { dictate(); return; }
         }
         if (ui::editBuffer(input_, k, 400)) { scroll_ = maxScroll(); os::invalidate(); }
     }
 
     void draw() override {
-        int rows = 8;
+        const int rows = 8;
         if (scroll_ > maxScroll()) scroll_ = maxScroll();
+        if (lines_.empty()) {
+            ui::centered(40, "Ask anything", ui::c().dim);
+            ui::centered(56, ai::spec(ai::preferred()).label, ui::c().accent);
+            if (!ai::configured(ai::preferred()))
+                ui::centered(70, "not configured - Settings", ui::c().warn);
+        }
         for (int i = 0; i < rows && scroll_ + i < (int)lines_.size(); i++)
-            ui::text(2, BODY_Y + i * ROW_H, lines_[scroll_ + i].text,
-                     lines_[scroll_ + i].color);
+            ui::text(3, BODY_Y + i * 10, lines_[scroll_ + i].text, lines_[scroll_ + i].color);
 
-        ui::gfx().drawLine(0, 100, SCREEN_W, 100, ui::DIM);
-        ui::inputLine(104, busy_ ? "" : "> ", busy_ ? String("...") : input_,
-                      busy_ ? ui::WARN : ui::FG, !busy_);
-        ui::hint("Enter send  TAB dictate  ctrl+L clear  ` back");
+        ui::inputLine(104, "> ", input_, ui::c().fg);
+        ui::hint("Enter send  TAB provider  ctrl+D dictate  ctrl+L clear");
     }
 
 private:
@@ -55,8 +65,7 @@ private:
     int maxScroll() const { return max(0, (int)lines_.size() - 8); }
 
     void push(const String& who, const String& text, uint16_t color) {
-        for (auto& l : ui::wrap(who + ": " + text, CHARS_PER_LINE))
-            lines_.push_back({l, color});
+        for (auto& l : ui::wrap(who + ": " + text, 38)) lines_.push_back({l, color});
         while (lines_.size() > 200) lines_.erase(lines_.begin());
         scroll_ = maxScroll();
     }
@@ -64,39 +73,61 @@ private:
     void rebuild() {
         lines_.clear();
         for (auto& m : history_)
-            push(m.role == "user" ? "You" : "Claude", m.content,
-                 m.role == "user" ? ui::WARN : ui::ACCENT);
+            push(m.role == "user" ? "You" : "AI", m.content,
+                 m.role == "user" ? ui::c().warn : ui::c().accent2);
+    }
+
+    void pickProvider() {
+        std::vector<String> opts;
+        for (int i = 0; i < (int)ai::Provider::COUNT; i++) {
+            ai::Provider p = (ai::Provider)i;
+            opts.push_back(String(ai::spec(p).label) + "  " +
+                           (ai::configured(p) ? ai::model(p) : String("(not set up)")));
+        }
+        int pick = ui::chooser("Assistant", opts, (int)ai::preferred());
+        if (pick >= 0) {
+            ai::setPreferred((ai::Provider)pick);
+            os::toast(String("now using ") + ai::spec((ai::Provider)pick).label, os::Tone::Good);
+        }
+        os::invalidate();
     }
 
     void dictate() {
-        if (!audio::micReady()) { os::toast("no mic"); return; }
-        audio::chirpOk();
+        if (!audio::micReady()) { os::toast("no mic", os::Tone::Bad); return; }
+        ui::releaseCanvas();
+        if (theme::sounds()) audio::chirpOk();
         audio::recordStart();
-        // Short blocking capture with a live meter — dictation is a burst, not a session.
+        if (!audio::recording()) {
+            os::toast("not enough memory to record", os::Tone::Bad);
+            ui::acquireCanvas();
+            return;
+        }
         while (audio::recordChunk()) {
-            ui::clear();
-            ui::centered(40, "Listening...", ui::BAD);
-            int w = (int)(audio::level() * (SCREEN_W - 20));
-            ui::gfx().drawRect(10, 58, SCREEN_W - 20, 14, ui::DIM);
-            ui::gfx().fillRect(11, 59, max(0, w - 2), 12, ui::GOOD);
-            ui::centered(84, String(audio::recordedSeconds(), 1) + "s  -  any key to stop", ui::DIM);
-            ui::statusBar("Dictating");
+            ui::beginFrame();
+            ui::centered(34, "Listening", ui::c().bad);
+            ui::progress(20, 52, SCREEN_W - 40, 12, audio::level(), ui::c().good);
+            ui::centered(76, String(audio::recordedSeconds(), 1) + "s  -  any key stops",
+                         ui::c().dim);
+            ui::statusBar("Dictating", ui::Icon::Mic);
+            ui::endFrame();
             M5Cardputer.update();
             if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) break;
         }
         audio::recordStop();
-        if (audio::recordedSamples() < audio::SAMPLE_RATE / 2) {
-            os::toast("too short");
+        size_t n = audio::recordedSamples();
+        if (n < audio::SAMPLE_RATE / 2) {
+            audio::freeBuffer();
+            ui::acquireCanvas();
+            os::toast("too short", os::Tone::Bad);
             os::invalidate();
             return;
         }
-        busy_ = true;
-        os::invalidate();
-        ui::clear(); ui::centered(58, "Transcribing...", ui::WARN); ui::statusBar("Ask");
-        auto r = cloud::transcribe(audio::pcm(), audio::recordedSamples());
-        busy_ = false;
-        if (r.ok) { input_ += (input_.length() ? " " : "") + r.text; }
-        else      { os::toast(r.error); }
+        ui::busy("Transcribing");
+        auto r = ai::transcribe(audio::pcm(), n);
+        audio::freeBuffer();
+        ui::acquireCanvas();
+        if (r.ok) input_ += (input_.length() ? " " : "") + r.text;
+        else      os::toast(r.error, os::Tone::Bad);
         os::invalidate();
     }
 
@@ -106,27 +137,25 @@ private:
         if (!msg.length()) return;
         input_ = "";
         history_.push_back({"user", msg});
-        push("You", msg, ui::WARN);
+        push("You", msg, ui::c().warn);
 
-        busy_ = true;
-        os::invalidate();
-        ui::clear(); draw(); ui::statusBar("Ask");
+        ui::busy(String("Asking ") + ai::spec(ai::preferred()).label);
 
-        // Replay a bounded slice of the conversation so context survives.
-        String convo;
+        std::vector<ai::Msg> convo;
         size_t start = history_.size() > 12 ? history_.size() - 12 : 0;
-        for (size_t i = start; i < history_.size(); i++)
-            convo += (history_[i].role == "user" ? "User: " : "Assistant: ") + history_[i].content + "\n";
+        for (size_t i = start; i < history_.size(); i++) convo.push_back(history_[i]);
 
-        auto r = cloud::ask(convo + "Assistant:", SYSTEM, 400);
+        auto r = ai::chat(convo, SYSTEM, 400);
         String reply = r.ok ? r.text : ("[" + r.error + "]");
         history_.push_back({"assistant", reply});
-        push("Claude", reply, r.ok ? ui::ACCENT : ui::BAD);
-        if (r.ok) os::toast(String("via ") + r.sourceName());
+        push(r.ok ? String(r.usedLabel()) : String("error"), reply,
+             r.ok ? ui::c().accent2 : ui::c().bad);
+        if (r.ok) os::toast(String(r.usedLabel()) + "  " + String(r.ms / 1000.0f, 1) + "s",
+                            os::Tone::Good);
+        else      os::toast(r.error, os::Tone::Bad);
 
         while (history_.size() > 24) history_.erase(history_.begin());
         save();
-        busy_ = false;
         os::invalidate();
     }
 
@@ -151,7 +180,7 @@ private:
         loaded_ = true;
         Preferences p;
         if (!p.begin("chat", true)) return;
-        String json = p.getString("hist", "");
+        String json = p.isKey("hist") ? p.getString("hist", "") : String("");
         p.end();
         JsonDocument doc;
         if (!json.length() || deserializeJson(doc, json)) return;
@@ -161,16 +190,16 @@ private:
     }
 
     static constexpr const char* SYSTEM =
-        "You are the assistant built into CardputerOS, running on a pocket handheld "
-        "with a 240x135 screen. Reply in PLAIN TEXT only - no markdown, no code fences, "
-        "no bullet lists. Be sharp and concise; stay under 400 characters unless asked "
+        "You are the assistant built into CardputerOS, on a pocket handheld with a "
+        "240x135 screen. Reply in PLAIN TEXT only - no markdown, no code fences, no "
+        "bullet lists. Be sharp and concise; stay under 400 characters unless asked "
         "for detail.";
 
-    std::vector<Msg> history_;
+    std::vector<ai::Msg> history_;
     std::vector<Line> lines_;
     String input_;
     int scroll_ = 0;
-    bool busy_ = false, loaded_ = false;
+    bool loaded_ = false;
 };
 
 App* askApp() { static Ask a; return &a; }

@@ -9,6 +9,17 @@ static const uint32_t SAMPLE_RATE = 16000;   // what Whisper wants
 
 void begin();
 bool micReady();
+
+// The capture buffer is ~128KB, far too much to hold at rest on a board with
+// no PSRAM. It is allocated when recording starts and freed once the samples
+// have been consumed, which is what makes room for the UI canvas and BLE.
+bool allocBuffer();
+void freeBuffer();
+bool bufferHeld();
+
+// Memory another subsystem will free before we record (the UI canvas). Counted
+// into the capacity estimate so the app can promise a realistic length.
+void setReclaimableBytes(size_t bytes);
 size_t capacitySamples();
 uint32_t capacitySeconds();
 

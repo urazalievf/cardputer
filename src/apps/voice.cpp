@@ -1,52 +1,59 @@
 #include "apps.h"
 #include "../kernel/ui.h"
+#include "../kernel/theme.h"
 #include "../kernel/audio.h"
 #include "../kernel/store.h"
 #include "../kernel/cloud.h"
+#include "../kernel/ai.h"
 
 // Voice memo -> text. TAB starts and stops; capture runs chunked from tick()
 // so the level meter stays live instead of freezing the UI.
 class Voice : public App {
-    enum Mode { IDLE, REC, BUSY, RESULT };
+    enum Mode : uint8_t { IDLE, REC, RESULT };
 public:
     const char* name() const override { return "Voice"; }
-    const char* blurb() const override { return "record + stt"; }
+    const char* blurb() const override { return "speak"; }
+    ui::Icon icon() const override { return ui::Icon::Mic; }
 
     String title() const override {
         if (mode_ == REC) {
             char b[32];
-            snprintf(b, sizeof(b), "REC %.1fs / %us", audio::recordedSeconds(),
+            snprintf(b, sizeof(b), "REC  %.1fs / %us", audio::recordedSeconds(),
                      (unsigned)audio::capacitySeconds());
             return String(b);
         }
-        if (mode_ == BUSY)   return "Transcribing...";
-        if (mode_ == RESULT) return "Transcript (" + String((int)text_.length()) + ")";
+        if (mode_ == RESULT) return "Transcript";
         return "Voice";
     }
 
-    bool escExits() const override { return mode_ == IDLE; }
+    bool onBack() override {
+        if (mode_ == REC)    { stopAndTranscribe(); return true; }
+        if (mode_ == RESULT) { mode_ = IDLE; audio::freeBuffer(); ui::acquireCanvas(); return true; }
+        return false;
+    }
 
     void onEnter() override { mode_ = IDLE; text_ = ""; scroll_ = 0; os::invalidate(); }
-    void onExit() override { if (mode_ == REC) audio::recordStop(); }
+    void onExit() override {
+        if (mode_ == REC) audio::recordStop();
+        audio::freeBuffer();
+        ui::acquireCanvas();
+    }
 
     void onKey(const KeyEvent& k) override {
         switch (mode_) {
             case IDLE:
-                if (k.tab || k.space) { start(); }
+                if (k.tab || k.space || k.enter) start();
                 return;
             case REC:
                 stopAndTranscribe();
                 return;
-            case BUSY:
-                return;
             case RESULT:
-                if (k.esc)     { mode_ = IDLE; os::invalidate(); return; }
-                if (k.tab)     { start(); return; }
+                if (k.tab)               { start(); return; }
                 if (k.down || k.is('j')) { scroll_++; os::invalidate(); return; }
                 if (k.up   || k.is('k')) { if (scroll_ > 0) scroll_--; os::invalidate(); return; }
                 if (k.is('s')) { saveNote(); return; }
                 if (k.is('d')) { appendDaily(); return; }
-                if (k.is('c')) { sendToClaude(); return; }
+                if (k.is('c')) { sendToAI(); return; }
                 return;
         }
     }
@@ -61,7 +68,6 @@ public:
         switch (mode_) {
             case IDLE:   return drawIdle();
             case REC:    return drawRec();
-            case BUSY:   ui::centered(58, busy_, ui::WARN); ui::hint(""); return;
             case RESULT: return drawResult();
         }
     }
@@ -69,75 +75,89 @@ public:
 private:
     void drawIdle() {
         if (!audio::micReady()) {
-            ui::centered(48, "Microphone unavailable", ui::BAD);
-            ui::centered(62, "check I2S / free heap", ui::DIM);
+            ui::centered(48, "Microphone unavailable", ui::c().bad);
+            ui::centered(62, "I2S did not come up", ui::c().dim);
             ui::hint("` back");
             return;
         }
-        ui::centered(44, "Press TAB to record", ui::FG);
-        ui::centered(58, "up to " + String((unsigned)audio::capacitySeconds()) + "s", ui::DIM);
-        ui::centered(76, cloud::hostOnline() ? "stt: mac daemon" : "stt: whisper api",
-                     cloud::hostOnline() ? ui::GOOD : ui::DIM);
+        ui::icon(SCREEN_W / 2 - 5, 34, ui::Icon::Mic, ui::c().accent);
+        ui::centered(52, "Press TAB to record", ui::c().fg);
+        ui::centered(66, "up to " + String((unsigned)audio::capacitySeconds()) + " seconds",
+                     ui::c().dim);
+
+        String engine = ai::sttLabel(ai::preferredStt());
+        bool ready = ai::sttConfigured(ai::preferredStt());
+        ui::centered(86, engine, ready ? ui::c().good : ui::c().warn);
+        if (!ready) ui::centered(98, "not configured - Settings", ui::c().dim);
         ui::hint("TAB record   ` back");
     }
 
     void drawRec() {
-        // Level meter
         float lv = audio::level();
-        int w = (int)(lv * (SCREEN_W - 20));
-        ui::gfx().drawRect(10, 50, SCREEN_W - 20, 14, ui::DIM);
-        ui::gfx().fillRect(11, 51, max(0, w - 2), 12, lv > 0.85f ? ui::BAD : ui::GOOD);
+        ui::centered(26, "Recording", ui::c().bad);
 
-        // Elapsed bar against capacity
+        // Level meter as discrete blocks: easier to read at a glance than a bar.
+        const int n = 24, bw = 8;
+        int x0 = (SCREEN_W - n * bw) / 2;
+        int lit = (int)(lv * n);
+        for (int i = 0; i < n; i++) {
+            uint16_t col = i < lit ? (i > n * 3 / 4 ? ui::c().bad
+                                    : i > n / 2     ? ui::c().warn : ui::c().good)
+                                   : ui::c().surface;
+            ui::gfx().fillRoundRect(x0 + i * bw, 44, bw - 2, 18, 1, col);
+        }
         float frac = audio::recordedSeconds() / max(1.0f, (float)audio::capacitySeconds());
-        ui::gfx().fillRect(10, 72, (int)(frac * (SCREEN_W - 20)), 3, ui::ACCENT);
-
-        ui::centered(30, "Recording", ui::BAD);
-        ui::hint("any key = stop & transcribe");
+        ui::progress(12, 72, SCREEN_W - 24, 8, frac, ui::c().accent);
+        ui::centered(88, String(audio::recordedSeconds(), 1) + "s", ui::c().dim);
+        ui::hint("any key stops and transcribes");
     }
 
     void drawResult() {
-        auto lines = ui::wrap(text_, CHARS_PER_LINE);
-        if (scroll_ > (int)lines.size() - 1) scroll_ = max(0, (int)lines.size() - 1);
-        for (int i = 0; i < 9 && scroll_ + i < (int)lines.size(); i++)
-            ui::text(2, BODY_Y + i * ROW_H, lines[scroll_ + i], ui::FG);
-        ui::hint("S note  D daily  C claude  TAB again  ` back");
+        ui::pager(text_, scroll_, ui::c().fg, theme::bodyRows());
+        ui::hint("S note  D daily  C ask  TAB again  ` back");
     }
 
     void start() {
-        if (!audio::micReady()) { os::toast("no mic"); return; }
-        audio::chirpOk();
+        if (!audio::micReady()) { os::toast("no mic", os::Tone::Bad); return; }
+        // The capture buffer and the UI canvas cannot both fit in internal RAM.
+        ui::releaseCanvas();
+        if (theme::sounds()) audio::chirpOk();
         audio::recordStart();
+        if (!audio::recording()) {
+            os::toast("not enough memory to record", os::Tone::Bad);
+            ui::acquireCanvas();
+            return;
+        }
         mode_ = REC;
         os::invalidate();
-    }
-
-    void busyPaint(const String& msg) {
-        busy_ = msg;
-        mode_ = BUSY;
-        ui::clear(); draw(); ui::statusBar(title().c_str());
     }
 
     void stopAndTranscribe() {
         audio::recordStop();
         size_t n = audio::recordedSamples();
-        if (n < audio::SAMPLE_RATE / 2) {     // under half a second
-            os::toast("too short");
+        if (n < audio::SAMPLE_RATE / 2) {
+            os::toast("too short", os::Tone::Bad);
+            audio::freeBuffer();
+            ui::acquireCanvas();
             mode_ = IDLE;
             os::invalidate();
             return;
         }
-        busyPaint("Transcribing " + String(audio::recordedSeconds(), 1) + "s...");
-        auto r = cloud::transcribe(audio::pcm(), n);
+        mode_ = RESULT;
+        ui::busy("Transcribing " + String(audio::recordedSeconds(), 1) + "s");
+        auto r = ai::transcribe(audio::pcm(), n);
+        audio::freeBuffer();
+        ui::acquireCanvas();
+
         if (r.ok && r.text.length()) {
             text_ = r.text;
-            os::toast(String("stt via ") + r.sourceName());
+            os::toast(String("heard it - ") + r.usedLabel(), os::Tone::Good);
         } else {
             text_ = "[" + (r.error.length() ? r.error : String("empty transcript")) + "]";
-            audio::chirpErr();
+            if (theme::sounds()) audio::chirpErr();
+            os::toast(r.error, os::Tone::Bad);
         }
         scroll_ = 0;
-        mode_ = RESULT;
         os::invalidate();
     }
 
@@ -145,30 +165,31 @@ private:
         String file = store::newNoteName(ui::firstLine(text_, 30));
         String body = "# " + ui::firstLine(text_, 40) + "\n\n" + text_ + "\n";
         bool ok = store::writeNote(file, body);
-        os::toast(ok ? "saved to Notes" : "save failed");
+        os::toast(ok ? "saved to Notes" : "save failed", ok ? os::Tone::Good : os::Tone::Bad);
     }
 
     void appendDaily() {
-        busyPaint("Appending to daily note...");
+        ui::busy("Appending to daily note");
         auto r = cloud::vaultDailyAppend("- " + text_ + "\n");
-        os::toast(r.ok ? "added to daily note" : r.error);
-        mode_ = RESULT;
+        os::toast(r.ok ? "added to today's note" : r.error,
+                  r.ok ? os::Tone::Good : os::Tone::Bad);
         os::invalidate();
     }
 
-    void sendToClaude() {
-        busyPaint("Asking Claude...");
-        auto r = cloud::ask(text_,
+    void sendToAI() {
+        ui::busy(String("Asking ") + ai::spec(ai::preferred()).label);
+        auto r = ai::ask(text_,
             "You are a pocket assistant on a 240x135 handheld. Plain text only, "
             "no markdown, under 400 characters.", 300);
         text_ = r.ok ? r.text : ("[" + r.error + "]");
+        os::toast(r.ok ? String("via ") + r.usedLabel() : r.error,
+                  r.ok ? os::Tone::Good : os::Tone::Bad);
         scroll_ = 0;
-        mode_ = RESULT;
         os::invalidate();
     }
 
     Mode mode_ = IDLE;
-    String text_, busy_;
+    String text_;
     int scroll_ = 0;
 };
 

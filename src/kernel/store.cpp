@@ -24,9 +24,12 @@ void begin() {
     if (s_cardPresent) ensureDir(NOTES_DIR);
 }
 
+// isKey() first: Preferences logs an ERROR for every miss, and on first boot
+// almost every key is a miss. Suppressing the whole ARDUINO log tag instead
+// would also hide the SD mount failures, which are worth seeing.
 String getStr(const char* key, const String& def) {
     if (!prefs.begin("cfg", true)) return def;
-    String v = prefs.getString(key, def);
+    String v = prefs.isKey(key) ? prefs.getString(key, def) : def;
     prefs.end();
     return v;
 }
@@ -37,7 +40,7 @@ void setStr(const char* key, const String& value) {
 }
 int getInt(const char* key, int def) {
     if (!prefs.begin("cfg", true)) return def;
-    int v = prefs.getInt(key, def);
+    int v = prefs.isKey(key) ? prefs.getInt(key, def) : def;
     prefs.end();
     return v;
 }
@@ -50,6 +53,14 @@ void remove(const char* key) {
     if (!prefs.begin("cfg", false)) return;
     prefs.remove(key);
     prefs.end();
+}
+
+void factoryReset() {
+    // Only the namespaces the OS owns. Markdown on the SD card is the user's.
+    for (const char* ns : {"cfg", "chat", "notes"}) {
+        Preferences p;
+        if (p.begin(ns, false)) { p.clear(); p.end(); }
+    }
 }
 
 // ---------------- SD ----------------
@@ -165,7 +176,7 @@ static std::vector<String> nvsNoteNames() {
     std::vector<String> out;
     Preferences p;
     if (!p.begin(NVS_NOTES_NS, true)) return out;
-    String json = p.getString("index", "");
+    String json = p.isKey("index") ? p.getString("index", "") : String("");
     p.end();
     if (!json.length()) return out;
     JsonDocument doc;

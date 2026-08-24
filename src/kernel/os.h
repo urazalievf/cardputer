@@ -1,37 +1,44 @@
-// CardputerOS kernel — app model, event loop, shared services.
+// CardputerOS kernel — app model, navigation, event loop, shared services.
 #pragma once
 #include <M5Cardputer.h>
 #include <Arduino.h>
 #include <vector>
 
 #ifndef CARDPUTER_OS_VERSION
-#define CARDPUTER_OS_VERSION "0.1.0-dev"
+#define CARDPUTER_OS_VERSION "0.2.0-dev"
 #endif
 
-// Screen is 240x135 in landscape (rotation 1).
 static const int SCREEN_W = 240;
 static const int SCREEN_H = 135;
-static const int STATUS_H = 11;   // top status bar
-static const int HINT_Y   = 125;  // bottom hint row
-static const int BODY_Y   = STATUS_H + 3;
-static const int ROW_H    = 10;
-static const int BODY_ROWS = 10;
-static const int CHARS_PER_LINE = 38;
+static const int STATUS_H = 11;
+static const int HINT_Y   = 126;
+static const int BODY_Y   = 16;
 
-// A normalized key press. The Cardputer keyboard reports raw chars plus
-// modifier flags; arrows live under fn + ; . , /
+// Declared here so App can name its icon without depending on the whole UI.
+namespace ui {
+enum class Icon : uint8_t {
+    None, Home, Note, Mic, Chat, Code, Wifi, Folder, Gear, Bluetooth,
+    Check, Cross, Arrow, Lock, Cloud, Chip, Clock, Battery,
+};
+}
+
+// A normalized key press. Arrows live under fn + ; . , / — the glyphs printed
+// on those keycaps.
 struct KeyEvent {
     std::vector<char> chars;
     bool enter = false, del = false, tab = false, space = false;
-    bool esc = false;                      // the ` key, labelled esc
+    bool esc = false;
     bool up = false, down = false, left = false, right = false;
     bool fn = false, ctrl = false, shift = false, opt = false, alt = false;
 
-    // First printable char, or 0.
     char ch() const { return chars.empty() ? 0 : chars[0]; }
-    bool is(char c) const {
-        for (char x : chars) if (x == c || x == (char)tolower(c)) return true;
+    bool is(char x) const {
+        for (char v : chars) if (v == x || tolower(v) == tolower(x)) return true;
         return false;
+    }
+    bool any() const {
+        return !chars.empty() || enter || del || tab || space || esc ||
+               up || down || left || right;
     }
 };
 
@@ -40,42 +47,50 @@ public:
     virtual ~App() {}
     virtual const char* name() const = 0;
     virtual const char* blurb() const { return ""; }
-    // Status-bar title; defaults to name(), override for live detail.
+    virtual ui::Icon icon() const { return ui::Icon::None; }
+    virtual uint16_t accent() const { return 0; }      // 0 = theme accent
     virtual String title() const { return String(name()); }
+
     virtual void onEnter() {}
     virtual void onExit() {}
     virtual void onKey(const KeyEvent&) {}
-    virtual void tick() {}          // every loop, ~50Hz
+    virtual void tick() {}
     virtual void draw() = 0;
-    // Return false to keep the kernel's global esc-to-launcher behaviour off
-    // (apps that need ` as a literal character, e.g. text fields).
-    virtual bool escExits() const { return true; }
+
+    // Esc / back. Return true if the app consumed it (closed a sub-view,
+    // cleared a field); return false to let the kernel pop the nav stack.
+    virtual bool onBack() { return false; }
 };
 
 namespace os {
 
+enum class Tone : uint8_t { Info, Good, Bad };
+
 void begin();
 void registerApp(App* app);
-
-// Serial diagnostics over USB CDC. Free when nothing is listening, and the
-// only way to tell an SD mount failure from an empty card without guessing.
-void logf(const char* fmt, ...);
-void bootReport();
-void run();                       // one iteration of the event loop
+void run();
 
 void launch(int index);
 void launchByName(const char* name);
-void home();                      // back to launcher
+void back();                      // app first, then the nav stack, then home
+void home();
 App* current();
 const std::vector<App*>& apps();
-int currentIndex();
+int  currentIndex();
+bool canGoBack();
 
-void invalidate();                // request a redraw
+void invalidate();
 bool consumeDirty();
 
-// Transient one-line message shown in the status bar for a few seconds.
-void toast(const String& msg);
+void toast(const String& msg, Tone tone = Tone::Info);
 const String& toastText();
+Tone toastTone();
 bool toastActive();
+
+// Exposed so blocking modals can read the keyboard with the same mapping.
+KeyEvent readKey();
+
+void logf(const char* fmt, ...);
+void bootReport();
 
 }  // namespace os

@@ -13,6 +13,7 @@
 | Speaker | NS4168 amp — **shares I2S with the mic** |
 | SD | SPI: SCK 40, MISO 39, MOSI 14, CS 12 |
 | Battery | 120 mAh internal, 1400 mAh in the base |
+| Bluetooth | BLE only — no Classic, no A2DP, no SPP |
 | Extras | Grove port, IR, USB-C |
 
 ## Things that bite
@@ -54,6 +55,20 @@ keycaps. `os::translate()` maps them; apps see `k.up`/`k.down`/`k.left`/`k.right
 **The `` ` `` key is Esc.** The kernel intercepts it for back/home unless an app
 returns `false` from `escExits()`. Text fields drop it rather than inserting a
 backtick.
+
+**Bluetooth needs the right toolchain.** ESP32-S3 has BLE but no Classic BT, so
+there is no A2DP or SPP — a BLE HID keyboard and a scanner are what the radio
+can actually do. More subtly, this project originally pinned
+`framework-arduinoespressif32-libs` to the Bruce-firmware build, whose
+`sdkconfig` says `# CONFIG_BT_ENABLED is not set`: Bluetooth is compiled out and
+there is no `libbt.a` to link against. Every BLE symbol fails to resolve with a
+confusing "does not name a type", because the headers are present but their
+bodies are behind `#if CONFIG_BT_ENABLED`. The pin is gone; the platform's stock
+libs ship BT enabled and cost ~290KB of flash.
+
+**Radio coexistence.** BLE and WiFi share one antenna. BLE runs at
+`ESP_PWR_LVL_P3` and only while the Bluetooth app is open, which keeps both
+usable and reclaims ~60KB of heap the rest of the time.
 
 **Flashing.** Usually just works over USB CDC. If the port doesn't appear, hold
 the G0 button on the StampS3 while plugging in to force download mode.
