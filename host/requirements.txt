@@ -1,0 +1,3 @@
+# Both are optional. The daemon runs on the standard library alone.
+zeroconf>=0.132        # so the device can find the Mac without typing an IP
+faster-whisper>=1.0    # local speech-to-text; skip if you use whisper.cpp or the API

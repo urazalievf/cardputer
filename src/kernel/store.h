@@ -1,0 +1,53 @@
+// Persistence: NVS-backed config + key/value, and the SD card filesystem.
+// Nothing secret ever lives in the repo — API keys are typed on-device and
+// kept in NVS under the "cfg" namespace.
+#pragma once
+#include "os.h"
+#include <vector>
+
+namespace store {
+
+void begin();
+
+// --- Config (NVS namespace "cfg") ---
+String getStr(const char* key, const String& def = "");
+void   setStr(const char* key, const String& value);
+int    getInt(const char* key, int def = 0);
+void   setInt(const char* key, int value);
+void   remove(const char* key);
+
+// Well-known config keys.
+static const char* K_HOST        = "host";       // companion daemon, e.g. "mac.local"
+static const char* K_HOST_PORT   = "hostport";
+static const char* K_ANTHROPIC   = "anthkey";
+static const char* K_OPENAI      = "oaikey";
+static const char* K_MODEL       = "model";
+static const char* K_BRIGHT      = "bright";
+static const char* K_VAULT       = "vault";      // Obsidian subfolder for device notes
+static const char* K_TZ          = "tz";         // POSIX TZ string for NTP
+
+// --- SD card ---
+bool sdReady();
+bool sdMount();                                  // safe to call repeatedly
+uint64_t sdTotalMB();
+uint64_t sdUsedMB();
+
+bool  writeFile(const String& path, const String& content);
+bool  appendFile(const String& path, const String& content);
+String readFile(const String& path);
+bool  removeFile(const String& path);
+bool  exists(const String& path);
+bool  ensureDir(const String& path);
+
+struct Entry { String name; bool isDir; size_t size; };
+std::vector<Entry> listDir(const String& path);
+
+// --- Notes (markdown on SD, NVS mirror when no card) ---
+static const char* NOTES_DIR = "/notes";
+std::vector<String> listNotes();                 // filenames, newest first
+String readNote(const String& file);
+bool   writeNote(const String& file, const String& body);
+bool   deleteNote(const String& file);
+String newNoteName(const String& title);         // 2026-08-24-1432-title.md
+
+}  // namespace store

@@ -1,0 +1,15 @@
+{
+  "port": 8787,
+  "claude_bin": "claude",
+  "default_project": "/Users/you/Projects",
+  "vault": "/Users/you/Documents/ObsidianVault",
+  "vault_subdir": "Cardputer",
+  "daily_dir": "Daily",
+  "daily_format": "%Y-%m-%d",
+  "stt": "auto",
+  "whisper_cpp_bin": "whisper-cli",
+  "whisper_cpp_model": "",
+  "faster_whisper_model": "base.en",
+  "openai_api_key": "",
+  "advertise": true
+}

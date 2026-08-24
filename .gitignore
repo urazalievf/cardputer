@@ -1,0 +1,10 @@
+.pio/
+.vscode/
+.DS_Store
+__pycache__/
+*.pyc
+# Never commit real credentials. Config lives in NVS on-device.
+src/secrets.h
+host/config.json
+*.local.json
+.env
