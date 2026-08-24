@@ -56,6 +56,11 @@ namespace os {
 
 void begin();
 void registerApp(App* app);
+
+// Serial diagnostics over USB CDC. Free when nothing is listening, and the
+// only way to tell an SD mount failure from an empty card without guessing.
+void logf(const char* fmt, ...);
+void bootReport();
 void run();                       // one iteration of the event loop
 
 void launch(int index);

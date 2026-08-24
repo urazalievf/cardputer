@@ -4,6 +4,8 @@
 #include "store.h"
 #include "cloud.h"
 #include "audio.h"
+#include <stdarg.h>
+#include <esp_heap_caps.h>
 
 namespace os {
 
@@ -12,6 +14,40 @@ static int  s_current = 0;
 static bool s_dirty = true;
 static String s_toast;
 static uint32_t s_toastUntil = 0;
+
+void logf(const char* fmt, ...) {
+    char buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    Serial.printf("[%7lu] %s\n", (unsigned long)millis(), buf);
+}
+
+void bootReport() {
+    logf("CardputerOS %s", CARDPUTER_OS_VERSION);
+    logf("chip     %s rev%d, %d cores @ %dMHz",
+         ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(), getCpuFrequencyMhz());
+    logf("flash    %u MB", (unsigned)(ESP.getFlashChipSize() / (1024 * 1024)));
+    logf("heap     %u KB free (%u KB internal, %u KB psram)",
+         (unsigned)(ESP.getFreeHeap() / 1024),
+         (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+         (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
+    logf("mic      %s, buffer %us",
+         audio::micReady() ? "ready" : "UNAVAILABLE", (unsigned)audio::capacitySeconds());
+    if (store::sdReady())
+        logf("sd       mounted, %llu/%llu MB used, %d notes",
+             store::sdUsedMB(), store::sdTotalMB(), (int)store::listNotes().size());
+    else
+        logf("sd       NOT MOUNTED - no card, or not FAT32 (exFAT/NTFS won't mount)");
+    logf("wifi     %d saved network(s)", (int)net::savedNetworks().size());
+    String host = store::getStr(store::K_HOST, "");
+    logf("host     %s", host.length() ? host.c_str() : "(not configured)");
+    logf("keys     anthropic=%s openai=%s",
+         store::getStr(store::K_ANTHROPIC, "").length() ? "set" : "unset",
+         store::getStr(store::K_OPENAI, "").length() ? "set" : "unset");
+    logf("ready");
+}
 
 void begin() {
     auto cfg = M5.config();
@@ -28,6 +64,18 @@ void begin() {
     audio::begin();
     net::begin();
     cloud::begin();
+
+    Serial.begin(115200);
+    uint32_t t0 = millis();
+    while (!Serial && millis() - t0 < 1200) delay(10);   // give the host CDC a moment
+    bootReport();
+
+    // Same facts on the panel, for when there's no laptop attached.
+    ui::splash("CardputerOS " CARDPUTER_OS_VERSION,
+               String("sd ") + (store::sdReady() ? "ok" : "none") +
+               "   mic " + (audio::micReady() ? "ok" : "fail") +
+               "   " + String(ESP.getFreeHeap() / 1024) + "K");
+    delay(1200);
     s_dirty = true;
 }
 
@@ -40,6 +88,7 @@ void launch(int index) {
     if (index < 0 || index >= (int)s_apps.size() || index == s_current) return;
     if (s_apps[s_current]) s_apps[s_current]->onExit();
     s_current = index;
+    logf("app -> %s", s_apps[s_current]->name());
     s_apps[s_current]->onEnter();
     s_dirty = true;
 }
@@ -88,6 +137,12 @@ static KeyEvent translate(const Keyboard_Class::KeysState& ks) {
 void run() {
     M5Cardputer.update();
     net::tick();
+
+    // USB CDC output before the host attaches is dropped on the floor, so
+    // re-emit the boot report each time a serial monitor shows up.
+    static bool reported = false;
+    if (Serial && !reported)      { reported = true;  bootReport(); }
+    else if (!Serial && reported) { reported = false; }
 
     static uint32_t lastToast = 0;
     if (lastToast && !toastActive()) { lastToast = 0; s_dirty = true; }

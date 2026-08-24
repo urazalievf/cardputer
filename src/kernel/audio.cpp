@@ -1,4 +1,5 @@
 #include "audio.h"
+#include "store.h"
 #include <esp_heap_caps.h>
 #include <string.h>
 
@@ -33,28 +34,49 @@ void begin() {
     }
     micOn();
     s_micReady = s_buf && M5Cardputer.Mic.isEnabled();
+    // Idle state favours the SD card: most apps read files, few record audio.
+    releaseI2S();
 }
 
 bool micReady() { return s_micReady; }
 size_t capacitySamples() { return s_cap; }
 uint32_t capacitySeconds() { return s_cap / SAMPLE_RATE; }
 
+// GPIO40 is the I2S bit clock AND the SD clock. Any audio path has to evict
+// the SD card first, and store::sdAcquire() evicts audio in the other
+// direction. s_haveI2S tracks whether we currently hold the pin at all.
+static bool s_haveI2S = false;
+
+bool ownsI2S() { return s_haveI2S; }
+
+void releaseI2S() {
+    M5Cardputer.Mic.end();
+    M5Cardputer.Speaker.end();
+    delay(40);
+    s_haveI2S = false;
+    s_micOwnsI2S = false;
+}
+
 void micOn() {
-    if (s_micOwnsI2S) return;
+    if (s_haveI2S && s_micOwnsI2S) return;
+    store::sdRelease();          // take GPIO40 back from the card
     M5Cardputer.Speaker.end();
     delay(60);
     M5Cardputer.Mic.begin();
     delay(60);
     s_micOwnsI2S = true;
+    s_haveI2S = true;
 }
 
 void speakerOn() {
-    if (!s_micOwnsI2S) return;
+    if (s_haveI2S && !s_micOwnsI2S) return;
+    store::sdRelease();
     M5Cardputer.Mic.end();
     delay(60);
     M5Cardputer.Speaker.begin();
     delay(60);
     s_micOwnsI2S = false;
+    s_haveI2S = true;
 }
 
 void clear() { s_used = 0; s_level = 0.0f; }

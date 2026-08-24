@@ -82,6 +82,7 @@ static Result hostPost(const String& path, const String& body, uint32_t timeoutM
     r.source = Source::Host;
     r.text = doc["response"].is<const char*>() ? doc["response"].as<String>()
                                                : doc["text"].as<String>();
+    os::logf("host %s -> %d chars", path.c_str(), (int)r.text.length());
     return r;
 }
 

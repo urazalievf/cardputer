@@ -15,6 +15,11 @@ uint32_t capacitySeconds();
 void micOn();
 void speakerOn();
 
+// Hand GPIO40 back to the SD card. The Cardputer wires the I2S bit clock and
+// the SD clock to the same pin, so only one of them can be live.
+void releaseI2S();
+bool ownsI2S();
+
 // Chunked capture so the caller can draw a level meter and stop on key release.
 void  recordStart();
 bool  recordChunk();        // grabs ~100ms; false when the buffer is full

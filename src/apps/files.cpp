@@ -45,8 +45,9 @@ public:
 
     void draw() override {
         if (!store::sdReady()) {
-            ui::centered(50, "No SD card", ui::BAD);
-            ui::centered(64, "insert and press M", ui::DIM);
+            ui::centered(44, "No SD card mounted", ui::BAD);
+            ui::centered(58, "insert one and press M", ui::DIM);
+            ui::centered(72, "must be FAT32 - exFAT won't mount", ui::DIM);
             ui::hint("M mount   ` back");
             return;
         }

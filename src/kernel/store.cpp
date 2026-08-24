@@ -2,6 +2,7 @@
 #include <Preferences.h>
 #include <SD.h>
 #include <SPI.h>
+#include "audio.h"
 #include <time.h>
 #include <ArduinoJson.h>
 #include <algorithm>
@@ -12,13 +13,15 @@ namespace store {
 static const int SD_SCK = 40, SD_MISO = 39, SD_MOSI = 14, SD_CS = 12;
 
 static Preferences prefs;
-static bool s_sd = false;
+static bool s_mounted = false;      // currently holding GPIO40 with SD mounted
+static bool s_cardPresent = false;  // a card mounted successfully at least once
+static uint64_t s_sizeMB = 0, s_usedMB = 0;
 
 void begin() {
     prefs.begin("cfg", false);
     prefs.end();
     sdMount();
-    if (s_sd) ensureDir(NOTES_DIR);
+    if (s_cardPresent) ensureDir(NOTES_DIR);
 }
 
 String getStr(const char* key, const String& def) {
@@ -50,28 +53,60 @@ void remove(const char* key) {
 }
 
 // ---------------- SD ----------------
-bool sdReady() { return s_sd; }
+bool sdReady() { return s_cardPresent; }
 
-bool sdMount() {
-    if (s_sd) return true;
-    SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
-    s_sd = SD.begin(SD_CS, SPI, 25000000);
-    return s_sd;
+void sdRelease() {
+    if (!s_mounted) return;
+    SD.end();
+    SPI.end();
+    s_mounted = false;
 }
 
-uint64_t sdTotalMB() { return s_sd ? SD.totalBytes() / (1024ULL * 1024ULL) : 0; }
-uint64_t sdUsedMB()  { return s_sd ? SD.usedBytes()  / (1024ULL * 1024ULL) : 0; }
+bool sdAcquire() {
+    if (s_mounted) return true;
+    // Evict audio: the I2S bit clock and the SD clock are both GPIO40.
+    audio::releaseI2S();
+    SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+    // 25MHz suits most cards; some older ones only enumerate slower.
+    s_mounted = SD.begin(SD_CS, SPI, 25000000);
+    if (!s_mounted) s_mounted = SD.begin(SD_CS, SPI, 4000000);
+    if (s_mounted) {
+        if (!s_cardPresent) {
+            uint8_t type = SD.cardType();
+            const char* t = type == CARD_MMC ? "MMC" : type == CARD_SD ? "SDSC"
+                          : type == CARD_SDHC ? "SDHC" : "unknown";
+            os::logf("sd: mounted %s, %llu MB (FAT16/FAT32 only - exFAT will not mount)",
+                     t, SD.cardSize() / (1024ULL * 1024ULL));
+        }
+        s_cardPresent = true;
+        s_sizeMB = SD.totalBytes() / (1024ULL * 1024ULL);
+        s_usedMB = SD.usedBytes() / (1024ULL * 1024ULL);
+    } else {
+        // The card can enumerate fine and still fail here: the Arduino SD
+        // library mounts FAT16/FAT32 only, and any card 64GB+ ships exFAT.
+        // Watch the serial log for "no valid FAT volume" to tell them apart.
+        os::logf("sd: mount failed - card absent, or not FAT32 (exFAT/NTFS won't mount)");
+        SPI.end();
+    }
+    return s_mounted;
+}
 
-bool exists(const String& path) { return s_sd && SD.exists(path); }
+bool sdMount() { return sdAcquire(); }
+
+// Cached so the status bar can read them without stealing GPIO40 from the mic.
+uint64_t sdTotalMB() { return s_sizeMB; }
+uint64_t sdUsedMB()  { return s_usedMB; }
+
+bool exists(const String& path) { return sdAcquire() && SD.exists(path); }
 
 bool ensureDir(const String& path) {
-    if (!s_sd) return false;
+    if (!sdAcquire()) return false;
     if (SD.exists(path)) return true;
     return SD.mkdir(path);
 }
 
 bool writeFile(const String& path, const String& content) {
-    if (!s_sd) return false;
+    if (!sdAcquire()) return false;
     File f = SD.open(path, FILE_WRITE);
     if (!f) return false;
     f.print(content);
@@ -80,7 +115,7 @@ bool writeFile(const String& path, const String& content) {
 }
 
 bool appendFile(const String& path, const String& content) {
-    if (!s_sd) return false;
+    if (!sdAcquire()) return false;
     File f = SD.open(path, FILE_APPEND);
     if (!f) return false;
     f.print(content);
@@ -89,7 +124,7 @@ bool appendFile(const String& path, const String& content) {
 }
 
 String readFile(const String& path) {
-    if (!s_sd) return "";
+    if (!sdAcquire()) return "";
     File f = SD.open(path, FILE_READ);
     if (!f) return "";
     String out;
@@ -99,11 +134,11 @@ String readFile(const String& path) {
     return out;
 }
 
-bool removeFile(const String& path) { return s_sd && SD.remove(path); }
+bool removeFile(const String& path) { return sdAcquire() && SD.remove(path); }
 
 std::vector<Entry> listDir(const String& path) {
     std::vector<Entry> out;
-    if (!s_sd) return out;
+    if (!sdAcquire()) return out;
     File dir = SD.open(path);
     if (!dir || !dir.isDirectory()) return out;
     File e = dir.openNextFile();
@@ -153,7 +188,7 @@ static void nvsSaveIndex(const std::vector<String>& names) {
 
 std::vector<String> listNotes() {
     std::vector<String> names;
-    if (s_sd) {
+    if (sdAcquire()) {
         for (auto& e : listDir(NOTES_DIR))
             if (!e.isDir && e.name.endsWith(".md")) names.push_back(e.name);
     } else {
@@ -165,7 +200,7 @@ std::vector<String> listNotes() {
 }
 
 String readNote(const String& file) {
-    if (s_sd) return readFile(String(NOTES_DIR) + "/" + file);
+    if (sdAcquire()) return readFile(String(NOTES_DIR) + "/" + file);
     Preferences p;
     if (!p.begin(NVS_NOTES_NS, true)) return "";
     String v = p.getString(file.substring(0, 15).c_str(), "");
@@ -174,7 +209,7 @@ String readNote(const String& file) {
 }
 
 bool writeNote(const String& file, const String& body) {
-    if (s_sd) {
+    if (sdAcquire()) {
         ensureDir(NOTES_DIR);
         return writeFile(String(NOTES_DIR) + "/" + file, body);
     }
@@ -192,7 +227,7 @@ bool writeNote(const String& file, const String& body) {
 }
 
 bool deleteNote(const String& file) {
-    if (s_sd) return removeFile(String(NOTES_DIR) + "/" + file);
+    if (sdAcquire()) return removeFile(String(NOTES_DIR) + "/" + file);
     Preferences p;
     if (p.begin(NVS_NOTES_NS, false)) { p.remove(file.substring(0, 15).c_str()); p.end(); }
     auto names = nvsNoteNames();
