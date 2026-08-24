@@ -47,6 +47,20 @@ bool statusClock(); void setStatusClock(bool v);
 bool bigText();     void setBigText(bool v);   // 8px rows -> 10px, fewer of them
 uint8_t brightness(); void setBrightness(uint8_t v);
 
+// --- per-role colour editing ---
+// Editing any colour clones the active preset into a "Custom" slot and
+// switches to it, so a preset is never destroyed by experimenting.
+int         colorRoleCount();
+const char* colorRoleName(int i);
+uint16_t    colorRole(int i);
+void        setColorRole(int i, uint16_t c);
+bool        isCustom();
+void        resetCustomToPreset(int presetIndex);
+
+// RGB565 <-> HSV, for the picker.
+void     toHsv(uint16_t c, uint8_t& h, uint8_t& s, uint8_t& v);
+uint16_t fromHsv(uint8_t h, uint8_t s, uint8_t v);
+
 int  rowHeight();      // follows bigText
 int  bodyRows();       // how many list rows fit
 int  charsPerLine();

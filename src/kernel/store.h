@@ -41,8 +41,12 @@ String readFile(const String& path);
 bool  removeFile(const String& path);
 bool  exists(const String& path);
 bool  ensureDir(const String& path);
+bool  makeDir(const String& path);
+bool  removeDir(const String& path);          // must already be empty
+bool  rename(const String& from, const String& to);
+bool  isDir(const String& path);
 
-struct Entry { String name; bool isDir; size_t size; };
+struct Entry { String name; bool isDir; size_t size; uint32_t mtime = 0; };
 std::vector<Entry> listDir(const String& path);
 
 // --- Notes (markdown on SD, NVS mirror when no card) ---

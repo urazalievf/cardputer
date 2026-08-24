@@ -12,6 +12,7 @@ namespace cloud {
 static bool     s_online = false;
 static uint32_t s_lastPing = 0;
 static String   s_features = "";
+static std::vector<String> s_backends;
 
 void begin() { s_lastPing = 0; s_features = ""; }
 
@@ -33,6 +34,9 @@ bool pingHost(uint32_t timeoutMs) {
     if (code == 200) {
         JsonDocument d;
         if (!deserializeJson(d, http.getString())) {
+            s_backends.clear();
+            for (JsonVariant v : d["backends"].as<JsonArray>())
+                s_backends.push_back(v.as<String>());
             s_features = String("v") + d["version"].as<String>() +
                          (d["claude"].as<bool>() ? " claude" : "") +
                          (d["vault"].as<bool>()  ? " vault"  : "") +
@@ -52,6 +56,11 @@ bool hostOnline() {
 }
 
 String hostFeatures() { return s_features; }
+
+std::vector<String> hostBackends() {
+    if (s_backends.empty() && hostOnline()) pingHost();
+    return s_backends;
+}
 
 bool discoverHost() {
     if (!net::connected()) return false;

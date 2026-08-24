@@ -11,6 +11,7 @@ public:
     const char* name() const override { return "WiFi"; }
     const char* blurb() const override { return "networks"; }
     ui::Icon icon() const override { return ui::Icon::Wifi; }
+    bool hidden() const override { return true; }   // reached via Settings
 
     String title() const override {
         if (mode_ == PASSWORD) return "Password";

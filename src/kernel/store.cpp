@@ -147,6 +147,32 @@ String readFile(const String& path) {
 
 bool removeFile(const String& path) { return sdAcquire() && SD.remove(path); }
 
+bool makeDir(const String& path) {
+    if (!sdAcquire()) return false;
+    if (SD.exists(path)) return false;
+    return SD.mkdir(path);
+}
+
+bool removeDir(const String& path) {
+    if (!sdAcquire()) return false;
+    return SD.rmdir(path);
+}
+
+bool rename(const String& from, const String& to) {
+    if (!sdAcquire()) return false;
+    if (SD.exists(to)) return false;
+    return SD.rename(from, to);
+}
+
+bool isDir(const String& path) {
+    if (!sdAcquire()) return false;
+    File f = SD.open(path);
+    if (!f) return false;
+    bool d = f.isDirectory();
+    f.close();
+    return d;
+}
+
 std::vector<Entry> listDir(const String& path) {
     std::vector<Entry> out;
     if (!sdAcquire()) return out;
@@ -157,7 +183,8 @@ std::vector<Entry> listDir(const String& path) {
         String n = String(e.name());
         int slash = n.lastIndexOf('/');
         if (slash >= 0) n = n.substring(slash + 1);
-        if (!n.startsWith(".")) out.push_back({n, e.isDirectory(), (size_t)e.size()});
+        if (!n.startsWith("."))
+            out.push_back({n, e.isDirectory(), (size_t)e.size(), (uint32_t)e.getLastWrite()});
         e.close();
         e = dir.openNextFile();
     }

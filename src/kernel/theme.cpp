@@ -49,19 +49,110 @@ static const Palette PRESETS[] = {
 };
 static const int N_PRESETS = sizeof(PRESETS) / sizeof(PRESETS[0]);
 
+static Palette s_custom;
+static bool s_customLoaded = false;
 static Palette s_cur;
+
+// Field order used by the colour editor and by the NVS blob.
+static uint16_t Palette::* const ROLES[] = {
+    &Palette::bg, &Palette::surface, &Palette::border, &Palette::fg, &Palette::dim,
+    &Palette::accent, &Palette::accent2, &Palette::good, &Palette::warn,
+    &Palette::bad, &Palette::selbg, &Palette::selfg,
+};
+static const char* ROLE_NAMES[] = {
+    "Background", "Panels", "Lines", "Text", "Dim text",
+    "Accent", "Accent 2", "Good", "Warning", "Bad",
+    "Selected bg", "Selected text",
+};
+static const int N_ROLES = sizeof(ROLES) / sizeof(ROLES[0]);
 static int  s_preset = 0;
 static int  s_hue = 256;
 static bool s_sounds = true, s_hints = true, s_clock = true, s_big = false;
 static uint8_t s_bright = 120;
 
+static void saveCustom() {
+    String blob;
+    for (int i = 0; i < N_ROLES; i++) {
+        if (i) blob += ",";
+        blob += String((uint32_t)(s_custom.*ROLES[i]));
+    }
+    store::setStr("thcustom", blob);
+}
+
+static void loadCustom() {
+    if (s_customLoaded) return;
+    s_customLoaded = true;
+    s_custom = PRESETS[0];
+    s_custom.name = "Custom";
+    String blob = store::getStr("thcustom", "");
+    if (!blob.length()) return;
+    int from = 0, i = 0;
+    while (from < (int)blob.length() && i < N_ROLES) {
+        int comma = blob.indexOf(',', from);
+        if (comma < 0) comma = blob.length();
+        s_custom.*ROLES[i] = (uint16_t)blob.substring(from, comma).toInt();
+        from = comma + 1;
+        i++;
+    }
+}
+
+bool isCustom() { return s_preset == N_PRESETS; }
+
 static void rebuild() {
-    s_cur = PRESETS[constrain(s_preset, 0, N_PRESETS - 1)];
+    loadCustom();
+    if (s_preset == N_PRESETS) s_cur = s_custom;
+    else s_cur = PRESETS[constrain(s_preset, 0, N_PRESETS - 1)];
     if (s_hue >= 0 && s_hue <= 255) s_cur.accent = hueColor((uint8_t)s_hue);
 }
 
+int colorRoleCount() { return N_ROLES; }
+const char* colorRoleName(int i) { return ROLE_NAMES[constrain(i, 0, N_ROLES - 1)]; }
+uint16_t colorRole(int i) { return s_cur.*ROLES[constrain(i, 0, N_ROLES - 1)]; }
+
+void resetCustomToPreset(int presetIndex) {
+    loadCustom();
+    s_custom = PRESETS[constrain(presetIndex, 0, N_PRESETS - 1)];
+    s_custom.name = "Custom";
+    saveCustom();
+    rebuild();
+}
+
+void setColorRole(int i, uint16_t c) {
+    loadCustom();
+    // First edit from a preset clones it, so presets stay pristine.
+    if (s_preset != N_PRESETS) {
+        s_custom = PRESETS[constrain(s_preset, 0, N_PRESETS - 1)];
+        s_custom.name = "Custom";
+        if (s_hue >= 0 && s_hue <= 255) s_custom.accent = hueColor((uint8_t)s_hue);
+        s_preset = N_PRESETS;
+        store::setInt("thpreset", s_preset);
+        s_hue = 256;                     // the custom accent supersedes the hue knob
+        store::setInt("thhue", s_hue);
+    }
+    s_custom.*ROLES[constrain(i, 0, N_ROLES - 1)] = c;
+    saveCustom();
+    rebuild();
+}
+
+void toHsv(uint16_t c, uint8_t& h, uint8_t& s, uint8_t& v) {
+    int r = ((c >> 11) & 0x1F) * 255 / 31;
+    int g = ((c >> 5) & 0x3F) * 255 / 63;
+    int b = (c & 0x1F) * 255 / 31;
+    int mx = max(r, max(g, b)), mn = min(r, min(g, b));
+    v = mx;
+    s = mx == 0 ? 0 : (mx - mn) * 255 / mx;
+    if (mx == mn) { h = 0; return; }
+    int d = mx - mn, hue;
+    if (mx == r)      hue = 43 * (g - b) / d + (g < b ? 256 : 0);
+    else if (mx == g) hue = 43 * (b - r) / d + 85;
+    else              hue = 43 * (r - g) / d + 171;
+    h = (uint8_t)((hue + 256) % 256);
+}
+
+uint16_t fromHsv(uint8_t h, uint8_t s, uint8_t v) { return hueColor(h, s, v); }
+
 void begin() {
-    s_preset = store::getInt("thpreset", 0);
+    s_preset = constrain(store::getInt("thpreset", 0), 0, N_PRESETS);
     s_hue    = store::getInt("thhue", 256);
     s_sounds = store::getInt("thsound", 1) != 0;
     s_hints  = store::getInt("thhints", 1) != 0;
@@ -73,11 +164,15 @@ void begin() {
 
 const Palette& cur() { return s_cur; }
 
-int presetCount() { return N_PRESETS; }
-const char* presetName(int i) { return PRESETS[constrain(i, 0, N_PRESETS - 1)].name; }
+// The Custom slot is presented as one more preset at the end of the list.
+int presetCount() { return N_PRESETS + 1; }
+const char* presetName(int i) {
+    return i >= N_PRESETS ? "Custom" : PRESETS[constrain(i, 0, N_PRESETS - 1)].name;
+}
 int preset() { return s_preset; }
 void setPreset(int i) {
-    s_preset = ((i % N_PRESETS) + N_PRESETS) % N_PRESETS;
+    int n = N_PRESETS + 1;
+    s_preset = ((i % n) + n) % n;
     store::setInt("thpreset", s_preset);
     rebuild();
 }

@@ -16,6 +16,18 @@ static bool     s_micOwnsI2S = false;
 static const size_t CHUNK = SAMPLE_RATE / 10;   // 100ms
 static size_t s_reclaimable = 0;
 
+// Ring buffer of envelope points. Cheap: 240 floats, written once per sub-block.
+static float s_wave[WAVE_POINTS] = {0};
+static int   s_waveHead = 0;
+static int   s_waveFill = 0;
+static const int SUBS = 8;            // envelope points per 100ms chunk
+
+static void wavePush(float v) {
+    s_wave[s_waveHead] = v;
+    s_waveHead = (s_waveHead + 1) % WAVE_POINTS;
+    if (s_waveFill < WAVE_POINTS) s_waveFill++;
+}
+
 void setReclaimableBytes(size_t bytes) { s_reclaimable = bytes; }
 
 // How much we could capture if we asked right now. Reported before any
@@ -105,9 +117,24 @@ void speakerOn() {
     s_haveI2S = true;
 }
 
-void clear() { s_used = 0; s_level = 0.0f; }
+void clear() { s_used = 0; s_level = 0.0f; waveClear(); }
+
+int waveCount() { return s_waveFill; }
+
+float waveAt(int i) {
+    if (i < 0 || i >= s_waveFill) return 0.0f;
+    int start = (s_waveHead - s_waveFill + WAVE_POINTS) % WAVE_POINTS;
+    return s_wave[(start + i) % WAVE_POINTS];
+}
+
+void waveClear() {
+    s_waveHead = 0;
+    s_waveFill = 0;
+    for (int i = 0; i < WAVE_POINTS; i++) s_wave[i] = 0.0f;
+}
 
 void recordStart() {
+    waveClear();
     if (!allocBuffer()) { s_recording = false; return; }
     micOn();
     s_used = 0;
@@ -123,13 +150,21 @@ bool recordChunk() {
     if (!M5Cardputer.Mic.record(s_buf + s_used, CHUNK, SAMPLE_RATE)) return false;
     while (M5Cardputer.Mic.isRecording()) delay(2);
 
-    // RMS of this chunk, normalised against a comfortable speaking level.
-    uint64_t sum = 0;
-    for (size_t i = 0; i < CHUNK; i++) {
-        int32_t v = s_buf[s_used + i];
-        sum += (uint64_t)(v * v);
+    // Envelope in SUBS slices so the waveform scrolls smoothly, plus the
+    // whole-chunk RMS for the coarse level readout.
+    const size_t sub = CHUNK / SUBS;
+    uint64_t total = 0;
+    for (int s = 0; s < SUBS; s++) {
+        uint64_t sum = 0;
+        for (size_t i = 0; i < sub; i++) {
+            int32_t v = s_buf[s_used + s * sub + i];
+            sum += (uint64_t)(v * v);
+        }
+        total += sum;
+        float subRms = sqrtf((float)sum / sub) / 6000.0f;
+        wavePush(subRms > 1.0f ? 1.0f : subRms);
     }
-    float rms = sqrtf((float)sum / CHUNK);
+    float rms = sqrtf((float)total / (sub * SUBS));
     s_level = rms / 6000.0f;
     if (s_level > 1.0f) s_level = 1.0f;
 

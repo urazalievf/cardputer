@@ -50,6 +50,9 @@ public:
     virtual ui::Icon icon() const { return ui::Icon::None; }
     virtual uint16_t accent() const { return 0; }      // 0 = theme accent
     virtual String title() const { return String(name()); }
+    // Hidden apps stay reachable by name but keep off the launcher grid —
+    // connectivity lives under Settings rather than as its own tile.
+    virtual bool hidden() const { return false; }
 
     virtual void onEnter() {}
     virtual void onExit() {}

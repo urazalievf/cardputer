@@ -13,6 +13,7 @@ public:
     const char* name() const override { return "Bluetooth"; }
     const char* blurb() const override { return "ble"; }
     ui::Icon icon() const override { return ui::Icon::Bluetooth; }
+    bool hidden() const override { return true; }   // reached via Settings
     uint16_t accent() const override { return ui::c().accent2; }
 
     String title() const override {
@@ -144,10 +145,13 @@ private:
         if (k.del)    { bt::sendBackspace(); if (typed_.length()) typed_.remove(typed_.length()-1);
                         os::invalidate(); return; }
         if (k.space)  { bt::sendChar(' ');   append(' '); return; }
-        if (k.up)     { bt::sendArrow(0); return; }
-        if (k.down)   { bt::sendArrow(1); return; }
-        if (k.left)   { bt::sendArrow(2); return; }
-        if (k.right)  { bt::sendArrow(3); return; }
+        // Bare ; . , / are literal characters here; fn makes them arrows.
+        if (k.chars.empty()) {
+            if (k.up)    { bt::sendArrow(0); return; }
+            if (k.down)  { bt::sendArrow(1); return; }
+            if (k.left)  { bt::sendArrow(2); return; }
+            if (k.right) { bt::sendArrow(3); return; }
+        }
         for (char ch : k.chars) { bt::sendChar(ch); append(ch); }
     }
 

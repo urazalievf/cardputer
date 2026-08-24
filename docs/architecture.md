@@ -3,7 +3,8 @@
 ## Layers
 
 ```
-apps/     notes voice ask code wifi bluetooth files settings
+apps/     notes voice ask code translate tasks calc timer weather
+          files settings   (+ wifi, bluetooth: hidden, opened from settings)
           ────────────────────────────────────────────────
 kernel/   os      app registry, nav stack, event loop, global keys
           ui      canvas rendering, widgets, modals
@@ -76,6 +77,24 @@ Overridables worth knowing:
 - `title()` — status-bar text; default is `name()`. Use it for live counts.
 - `onBack()` — return `true` if you consumed the back key (closed a sub-view,
   cleared a field). Return `false` and the kernel pops the nav stack for you.
+- `hidden()` — return `true` to stay off the launcher grid while remaining
+  reachable via `os::launchByName()`. Connectivity uses this.
+
+## Keys
+
+The Cardputer prints arrow glyphs on the `;` `.` `,` `/` keycaps. `os::readKey()`
+sets `k.up/down/left/right` from those keys directly — that is what every other
+firmware on this hardware does, and requiring `fn` makes the arrows feel dead.
+The character is *also* kept in `k.chars` unless `fn` was held, so:
+
+- navigation screens read the flags and work with a bare keypress
+- text screens read `k.chars` first and type the character
+- `fn` + the key is unambiguously an arrow, for text screens that need both
+
+Two gotchas live in the M5 library. `isChange()` compares only the *number* of
+keys held, not which ones. And with `ctrl` or `shift` down it substitutes
+`value_second`, so `ctrl+1` arrives as `!` — `unshiftDigit()` maps the top row
+back.
 - `tick()` — called every pass whether or not the screen is dirty.
 
 ## Memory arbitration

@@ -40,6 +40,14 @@ size_t recordedSamples();
 float recordedSeconds();
 float level();              // 0.0 - 1.0, RMS of the last chunk
 
+// A scrolling envelope of the last few seconds, for drawing a live waveform.
+// Each chunk contributes SUBS points, so the trace moves smoothly rather than
+// stepping once per 100ms.
+static const int WAVE_POINTS = 240;
+int   waveCount();
+float waveAt(int i);        // 0 = oldest visible, waveCount()-1 = newest
+void  waveClear();
+
 const int16_t* pcm();
 void clear();
 

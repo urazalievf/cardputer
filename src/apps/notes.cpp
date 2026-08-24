@@ -4,6 +4,7 @@
 #include "../kernel/store.h"
 #include "../kernel/cloud.h"
 #include "../kernel/ai.h"
+#include <algorithm>
 
 // Markdown notes. Real .md files on the SD card, so the card drops straight
 // into an Obsidian vault; S pushes one over WiFi instead.
@@ -35,7 +36,12 @@ public:
         }
     }
 
-    void onEnter() override { reload(); mode_ = LIST; os::invalidate(); }
+    void onEnter() override {
+        sort_ = store::getInt("notesort", 0);
+        reload();
+        mode_ = LIST;
+        os::invalidate();
+    }
 
     void onKey(const KeyEvent& k) override {
         switch (mode_) {
@@ -58,8 +64,20 @@ public:
 private:
     static const size_t MAXLEN = 4000;
 
+    const char* sortName() const {
+        static const char* names[] = {"newest", "oldest", "A-Z"};
+        return names[sort_ % 3];
+    }
+
     void reload() {
-        files_ = store::listNotes();
+        files_ = store::listNotes();       // already newest-first
+        int mode = sort_;
+        if (mode == 1) std::reverse(files_.begin(), files_.end());
+        else if (mode == 2)
+            std::sort(files_.begin(), files_.end(), [](const String& a, const String& b) {
+                // Names are "<timestamp>-<slug>.md"; sort on the slug.
+                return a.substring(16) < b.substring(16);
+            });
         if (sel_ >= (int)files_.size()) sel_ = files_.empty() ? 0 : files_.size() - 1;
     }
 
@@ -76,6 +94,15 @@ private:
     void keyList(const KeyEvent& k) {
         if (k.is('n')) { editingNew_ = true; buf_ = ""; mode_ = EDIT; os::invalidate(); return; }
         if (k.is('r')) { reload(); os::toast("reloaded"); return; }
+        if (k.is('o')) {
+            sort_ = (sort_ + 1) % 3;
+            store::setInt("notesort", sort_);
+            reload();
+            sel_ = 0;
+            os::toast(String("sorted by ") + sortName(), os::Tone::Good);
+            os::invalidate();
+            return;
+        }
         if (files_.empty()) return;
         if (k.up   || k.is('k')) { if (sel_ > 0) sel_--; os::invalidate(); return; }
         if (k.down || k.is('j')) { if (sel_ < (int)files_.size() - 1) sel_++; os::invalidate(); return; }
@@ -98,7 +125,7 @@ private:
         std::vector<ui::Row> rows;
         for (auto& f : files_) rows.push_back({pretty(f), "", ui::Icon::Note, 0});
         scroll_ = ui::listView(rows, sel_, scroll_);
-        ui::hint("Enter open   N new   ` back");
+        ui::hint(String("Enter open   N new   O ") + sortName() + "   ` back");
     }
 
     void keyView(const KeyEvent& k) {
@@ -168,7 +195,7 @@ private:
 
     void keyAsk(const KeyEvent& k) {
         if (k.enter) { runAsk(); return; }
-        if (question_.length() == 0) {
+        if (question_.length() == 0 && k.chars.empty()) {
             if (k.down) { askScroll_++; os::invalidate(); return; }
             if (k.up)   { if (askScroll_ > 0) askScroll_--; os::invalidate(); return; }
         }
@@ -198,7 +225,7 @@ private:
 
     Mode mode_ = LIST;
     std::vector<String> files_;
-    int sel_ = 0, scroll_ = 0, viewScroll_ = 0, askScroll_ = 0;
+    int sel_ = 0, scroll_ = 0, viewScroll_ = 0, askScroll_ = 0, sort_ = 0;
     String current_, body_, buf_, question_, answer_;
     bool editingNew_ = false;
 };

@@ -5,6 +5,7 @@
 #include "../kernel/store.h"
 #include "../kernel/cloud.h"
 #include "../kernel/ai.h"
+#include "../kernel/hw.h"
 
 // Voice memo -> text. TAB starts and stops; capture runs chunked from tick()
 // so the level meter stays live instead of freezing the UI.
@@ -28,14 +29,22 @@ public:
 
     bool onBack() override {
         if (mode_ == REC)    { stopAndTranscribe(); return true; }
-        if (mode_ == RESULT) { mode_ = IDLE; audio::freeBuffer(); ui::acquireCanvas(); return true; }
+        if (mode_ == RESULT) {
+            mode_ = IDLE;
+            audio::freeBuffer();
+            havePcm_ = false;
+            ui::acquireCanvas();
+            return true;
+        }
         return false;
     }
 
     void onEnter() override { mode_ = IDLE; text_ = ""; scroll_ = 0; os::invalidate(); }
     void onExit() override {
         if (mode_ == REC) audio::recordStop();
+        hw::ledOff();
         audio::freeBuffer();
+        havePcm_ = false;
         ui::acquireCanvas();
     }
 
@@ -49,6 +58,7 @@ public:
                 return;
             case RESULT:
                 if (k.tab)               { start(); return; }
+                if (k.is('p'))           { playback(); return; }
                 if (k.down || k.is('j')) { scroll_++; os::invalidate(); return; }
                 if (k.up   || k.is('k')) { if (scroll_ > 0) scroll_--; os::invalidate(); return; }
                 if (k.is('s')) { saveNote(); return; }
@@ -92,33 +102,50 @@ private:
         ui::hint("TAB record   ` back");
     }
 
-    void drawRec() {
-        float lv = audio::level();
-        ui::centered(26, "Recording", ui::c().bad);
+    // A live, scrolling waveform — mirrored around a centre line, newest on the
+    // right, so it reads like an oscilloscope rather than a progress bar.
+    void drawWave(int top, int height, uint16_t tint) {
+        auto& g = ui::gfx();
+        const int mid = top + height / 2;
+        const int half = height / 2 - 1;
+        g.drawFastHLine(0, mid, SCREEN_W, ui::c().border);
 
-        // Level meter as discrete blocks: easier to read at a glance than a bar.
-        const int n = 24, bw = 8;
-        int x0 = (SCREEN_W - n * bw) / 2;
-        int lit = (int)(lv * n);
-        for (int i = 0; i < n; i++) {
-            uint16_t col = i < lit ? (i > n * 3 / 4 ? ui::c().bad
-                                    : i > n / 2     ? ui::c().warn : ui::c().good)
-                                   : ui::c().surface;
-            ui::gfx().fillRoundRect(x0 + i * bw, 44, bw - 2, 18, 1, col);
+        int n = audio::waveCount();
+        if (n <= 0) return;
+        int first = n > SCREEN_W ? n - SCREEN_W : 0;
+        int count = n - first;
+        int xoff = SCREEN_W - count;          // newest sample hugs the right edge
+
+        for (int i = 0; i < count; i++) {
+            float v = audio::waveAt(first + i);
+            int h = (int)(v * half);
+            if (h < 1) h = 1;
+            // Loud passages warm up; clipping goes red.
+            uint16_t col = v > 0.92f ? ui::c().bad : v > 0.6f ? ui::c().warn : tint;
+            g.drawFastVLine(xoff + i, mid - h, h * 2, col);
         }
+    }
+
+    void drawRec() {
+        ui::centered(20, "Recording", ui::c().bad);
+        drawWave(30, 46, ui::c().good);
+
         float frac = audio::recordedSeconds() / max(1.0f, (float)audio::capacitySeconds());
-        ui::progress(12, 72, SCREEN_W - 24, 8, frac, ui::c().accent);
-        ui::centered(88, String(audio::recordedSeconds(), 1) + "s", ui::c().dim);
+        ui::progress(12, 82, SCREEN_W - 24, 6, frac, ui::c().accent);
+        String t = String(audio::recordedSeconds(), 1) + "s  /  " +
+                   String((unsigned)audio::capacitySeconds()) + "s";
+        ui::centered(94, t, ui::c().dim);
         ui::hint("any key stops and transcribes");
     }
 
     void drawResult() {
         ui::pager(text_, scroll_, ui::c().fg, theme::bodyRows());
-        ui::hint("S note  D daily  C ask  TAB again  ` back");
+        ui::hint(String(havePcm_ ? "P play  " : "") + "S note  D daily  C ask  TAB again");
     }
 
     void start() {
         if (!audio::micReady()) { os::toast("no mic", os::Tone::Bad); return; }
+        havePcm_ = false;
         // The capture buffer and the UI canvas cannot both fit in internal RAM.
         ui::releaseCanvas();
         if (theme::sounds()) audio::chirpOk();
@@ -128,12 +155,14 @@ private:
             ui::acquireCanvas();
             return;
         }
+        hw::led(70, 0, 0);            // the screen is not always facing you
         mode_ = REC;
         os::invalidate();
     }
 
     void stopAndTranscribe() {
         audio::recordStop();
+        hw::ledOff();
         size_t n = audio::recordedSamples();
         if (n < audio::SAMPLE_RATE / 2) {
             os::toast("too short", os::Tone::Bad);
@@ -146,7 +175,9 @@ private:
         mode_ = RESULT;
         ui::busy("Transcribing " + String(audio::recordedSeconds(), 1) + "s");
         auto r = ai::transcribe(audio::pcm(), n);
-        audio::freeBuffer();
+        // Hold the samples so P can play them back; the canvas comes back only
+        // if there is room for both, otherwise the buffer wins until you leave.
+        havePcm_ = true;
         ui::acquireCanvas();
 
         if (r.ok && r.text.length()) {
@@ -158,6 +189,35 @@ private:
             os::toast(r.error, os::Tone::Bad);
         }
         scroll_ = 0;
+        os::invalidate();
+    }
+
+    // Hear it back. The samples are gone once the buffer is freed, so this only
+    // offers itself while they are still around.
+    void playback() {
+        if (!havePcm_ || !audio::bufferHeld()) { os::toast("samples already freed"); return; }
+        audio::speakerOn();
+        M5Cardputer.Speaker.setVolume(200);
+        M5Cardputer.Speaker.playRaw(audio::pcm(), audio::recordedSamples(),
+                                    audio::SAMPLE_RATE, false);
+        uint32_t total = audio::recordedSamples() * 1000UL / audio::SAMPLE_RATE;
+        uint32_t start = millis();
+        while (M5Cardputer.Speaker.isPlaying() && millis() - start < total + 500) {
+            ui::beginFrame();
+            ui::centered(20, "Playing back", ui::c().accent2);
+            drawWave(30, 46, ui::c().accent2);
+            float frac = (float)(millis() - start) / max(1UL, total);
+            ui::progress(12, 82, SCREEN_W - 24, 6, frac, ui::c().accent2);
+            ui::statusBar("Playback", ui::Icon::Mic);
+            ui::endFrame();
+            M5Cardputer.update();
+            if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
+                M5Cardputer.Speaker.stop();
+                break;
+            }
+            delay(30);
+        }
+        audio::micOn();
         os::invalidate();
     }
 
@@ -191,6 +251,7 @@ private:
     Mode mode_ = IDLE;
     String text_;
     int scroll_ = 0;
+    bool havePcm_ = false;
 };
 
 App* voiceApp() { static Voice a; return &a; }

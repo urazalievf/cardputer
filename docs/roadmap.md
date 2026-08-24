@@ -13,7 +13,32 @@
 - **Bluetooth**: BLE scanner, and HID keyboard mode that types into a paired
   Mac, iPad or phone
 - **Lazy audio buffer**: allocated only while recording, so idle heap stays high
-- Settings grew from 17 entries to 45, covering every key, model and toggle
+- Settings grew from 17 entries to 45, covering every key, model and toggle;
+  WiFi and Bluetooth moved inside it rather than taking launcher tiles
+- **Five more apps**: Translate (speak, get another language back), Tasks
+  (markdown checklist that syncs to Obsidian), Calc (recursive-descent
+  expression parser with history and ans), Timer (stopwatch / countdown /
+  pomodoro), Weather (open-meteo + ip-api, plain HTTP, no key)
+- **Files** can now create folders and files, edit text in place, rename, and
+  move things between folders with cut/paste
+- **Arrow keys fixed**: `; . , /` set the arrow flags directly, the way every
+  other Cardputer firmware behaves, while still typing literally in text
+  fields. `ctrl`+digit was broken too — with ctrl held the keyboard reports the
+  shifted glyph, so `ctrl+1` arrived as `!`
+- Settings → Keyboard test shows the raw key report, so the next input bug is
+  one screen away instead of four reflashes
+- **Remote**: IR universal remote (Samsung / LG-NEC / Sony), bit-banged so it
+  needs no library; the IR pin is a setting because a wrong pin fails silently
+- **Share**: HTTP file server over the SD card, with a self-hosted access point
+  for when there is no network to join
+- **Live waveform** in Voice — a scrolling mirrored envelope built from eight
+  sub-blocks per 100ms chunk — plus `P` to play the recording back
+- **Every palette role editable** with an HSV picker; edits clone the active
+  preset into a Custom slot rather than overwriting it
+- Home screen does grid or list, reorder, and A-Z sort; Files and Notes cycle
+  sort order; Files can create folders and files, edit and rename them
+- RGB LED (GPIO21) as a recording indicator, Grove I2C scanner with a
+  device-name table
 
 ## v0.3 — next
 - **Text cursor.** The editor still only appends and backspaces. Needs a caret

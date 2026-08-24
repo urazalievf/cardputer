@@ -136,16 +136,20 @@ KeyEvent readKey() {
     auto ks = M5Cardputer.Keyboard.keysState();
     k.enter = ks.enter; k.del = ks.del; k.tab = ks.tab; k.space = ks.space;
     k.fn = ks.fn; k.ctrl = ks.ctrl; k.shift = ks.shift; k.opt = ks.opt; k.alt = ks.alt;
+    // The Cardputer prints arrow glyphs on ; . , / and every other firmware
+    // treats them as arrows in menus, so they set the arrow flags directly.
+    // Without fn the character is ALSO kept, so text entry still types them:
+    // navigation screens read the flags, text screens read chars first.
     for (char ch : ks.word) {
-        if (k.fn) {
-            switch (ch) {
-                case ';': k.up = true;    continue;
-                case '.': k.down = true;  continue;
-                case ',': k.left = true;  continue;
-                case '/': k.right = true; continue;
-                default: break;
-            }
+        bool arrow = true;
+        switch (ch) {
+            case ';': k.up = true;    break;
+            case '.': k.down = true;  break;
+            case ',': k.left = true;  break;
+            case '/': k.right = true; break;
+            default:  arrow = false;  break;
         }
+        if (arrow && k.fn) continue;          // fn makes it unambiguously an arrow
         if (ch == '`') { k.esc = true; continue; }
         k.chars.push_back(ch);
     }
@@ -154,6 +158,14 @@ KeyEvent readKey() {
 
 // Shortcuts that work from anywhere. Kept few and mnemonic; anything an app
 // might legitimately want is left alone.
+// With ctrl held the keyboard reports the shifted glyph, so ctrl+1 arrives as
+// '!'. Map the top row back to digits.
+static char unshiftDigit(char ch) {
+    static const char* shifted = ")!@#$%^&*(";
+    for (int i = 0; i < 10; i++) if (shifted[i] == ch) return '0' + i;
+    return ch;
+}
+
 static bool handleGlobal(const KeyEvent& k) {
     if (!k.ctrl) return false;
     if (k.is('h')) { home(); return true; }
@@ -162,10 +174,17 @@ static bool handleGlobal(const KeyEvent& k) {
         toast(String("theme: ") + theme::presetName(theme::preset()), Tone::Good);
         return true;
     }
-    for (char ch : k.chars) {
+    for (char raw : k.chars) {
+        char ch = unshiftDigit(raw);
         if (ch >= '1' && ch <= '9') {
-            int idx = ch - '0';
-            if (idx < (int)s_apps.size()) { launch(idx); return true; }
+            int nth = ch - '0';
+            // Number keys address visible apps, matching the launcher grid.
+            int seen = 0;
+            for (size_t i = 1; i < s_apps.size(); i++) {
+                if (s_apps[i]->hidden()) continue;
+                if (++seen == nth) { launch(i); return true; }
+            }
+            return true;
         }
     }
     return false;

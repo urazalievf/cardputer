@@ -4,6 +4,7 @@
 #include "../kernel/audio.h"
 #include "../kernel/ai.h"
 #include "../kernel/store.h"
+#include "../kernel/cloud.h"
 #include <Preferences.h>
 #include <ArduinoJson.h>
 
@@ -16,8 +17,16 @@ public:
     ui::Icon icon() const override { return ui::Icon::Chat; }
 
     String title() const override {
-        return String(ai::spec(ai::preferred()).label) + "  " +
-               String((int)history_.size()) + " msgs";
+        return routeLabel() + "  " + String((int)history_.size()) + " msgs";
+    }
+
+    // "Gemini via Mac" reads better than "Mac daemon" when the daemon is just
+    // the transport and the account is what matters.
+    static String routeLabel() {
+        if (ai::preferred() != ai::Provider::Host) return ai::spec(ai::preferred()).label;
+        String be = store::getStr("m_host", "claude");
+        be.setCharAt(0, toupper(be[0]));
+        return be + " via Mac";
     }
 
     bool onBack() override {
@@ -28,9 +37,10 @@ public:
     void onEnter() override { load(); os::invalidate(); }
 
     void onKey(const KeyEvent& k) override {
-        if (k.tab)   { pickProvider(); return; }
+        if (k.tab)   { voiceAsk(); return; }
         if (k.enter) { send(); return; }
-        if (input_.length() == 0) {
+        if (k.ctrl && k.is('p')) { chooseAssistant(); os::invalidate(); return; }
+        if (input_.length() == 0 && k.chars.empty()) {
             if (k.down) { scroll_++; os::invalidate(); return; }
             if (k.up)   { if (scroll_ > 0) scroll_--; os::invalidate(); return; }
             if (k.ctrl && k.is('l')) {
@@ -38,7 +48,7 @@ public:
                 os::toast("conversation cleared");
                 return;
             }
-            if (k.ctrl && k.is('d')) { dictate(); return; }
+            if (k.ctrl && k.is('d')) { if (dictate()) os::invalidate(); return; }
         }
         if (ui::editBuffer(input_, k, 400)) { scroll_ = maxScroll(); os::invalidate(); }
     }
@@ -47,16 +57,17 @@ public:
         const int rows = 8;
         if (scroll_ > maxScroll()) scroll_ = maxScroll();
         if (lines_.empty()) {
-            ui::centered(40, "Ask anything", ui::c().dim);
-            ui::centered(56, ai::spec(ai::preferred()).label, ui::c().accent);
+            ui::centered(36, "Ask anything", ui::c().dim);
+            ui::centered(52, routeLabel(), ui::c().accent);
+            ui::centered(68, "TAB to ask out loud", ui::c().accent2);
             if (!ai::configured(ai::preferred()))
-                ui::centered(70, "not configured - Settings", ui::c().warn);
+                ui::centered(84, "not set up yet - ctrl+P", ui::c().warn);
         }
         for (int i = 0; i < rows && scroll_ + i < (int)lines_.size(); i++)
             ui::text(3, BODY_Y + i * 10, lines_[scroll_ + i].text, lines_[scroll_ + i].color);
 
         ui::inputLine(104, "> ", input_, ui::c().fg);
-        ui::hint("Enter send  TAB provider  ctrl+D dictate  ctrl+L clear");
+        ui::hint("TAB talk  Enter send  ctrl+P who  ctrl+L clear");
     }
 
 private:
@@ -77,30 +88,25 @@ private:
                  m.role == "user" ? ui::c().warn : ui::c().accent2);
     }
 
-    void pickProvider() {
-        std::vector<String> opts;
-        for (int i = 0; i < (int)ai::Provider::COUNT; i++) {
-            ai::Provider p = (ai::Provider)i;
-            opts.push_back(String(ai::spec(p).label) + "  " +
-                           (ai::configured(p) ? ai::model(p) : String("(not set up)")));
-        }
-        int pick = ui::chooser("Assistant", opts, (int)ai::preferred());
-        if (pick >= 0) {
-            ai::setPreferred((ai::Provider)pick);
-            os::toast(String("now using ") + ai::spec((ai::Provider)pick).label, os::Tone::Good);
-        }
-        os::invalidate();
+    // One button: talk, transcribe, send. The whole point of a device with a
+    // microphone and 56 keys the size of rice grains.
+    void voiceAsk() {
+        if (!dictate()) return;
+        String heard = input_;
+        heard.trim();
+        if (!heard.length()) return;
+        send();
     }
 
-    void dictate() {
-        if (!audio::micReady()) { os::toast("no mic", os::Tone::Bad); return; }
+    bool dictate() {
+        if (!audio::micReady()) { os::toast("no mic", os::Tone::Bad); return false; }
         ui::releaseCanvas();
         if (theme::sounds()) audio::chirpOk();
         audio::recordStart();
         if (!audio::recording()) {
             os::toast("not enough memory to record", os::Tone::Bad);
             ui::acquireCanvas();
-            return;
+            return false;
         }
         while (audio::recordChunk()) {
             ui::beginFrame();
@@ -108,6 +114,7 @@ private:
             ui::progress(20, 52, SCREEN_W - 40, 12, audio::level(), ui::c().good);
             ui::centered(76, String(audio::recordedSeconds(), 1) + "s  -  any key stops",
                          ui::c().dim);
+            ui::centered(92, ai::sttLabel(ai::preferredStt()), ui::c().dim);
             ui::statusBar("Dictating", ui::Icon::Mic);
             ui::endFrame();
             M5Cardputer.update();
@@ -120,15 +127,16 @@ private:
             ui::acquireCanvas();
             os::toast("too short", os::Tone::Bad);
             os::invalidate();
-            return;
+            return false;
         }
         ui::busy("Transcribing");
         auto r = ai::transcribe(audio::pcm(), n);
         audio::freeBuffer();
         ui::acquireCanvas();
-        if (r.ok) input_ += (input_.length() ? " " : "") + r.text;
-        else      os::toast(r.error, os::Tone::Bad);
+        if (!r.ok) { os::toast(r.error, os::Tone::Bad); os::invalidate(); return false; }
+        input_ += (input_.length() ? " " : "") + r.text;
         os::invalidate();
+        return true;
     }
 
     void send() {
@@ -139,7 +147,7 @@ private:
         history_.push_back({"user", msg});
         push("You", msg, ui::c().warn);
 
-        ui::busy(String("Asking ") + ai::spec(ai::preferred()).label);
+        ui::busy(String("Asking ") + routeLabel());
 
         std::vector<ai::Msg> convo;
         size_t start = history_.size() > 12 ? history_.size() - 12 : 0;
@@ -203,3 +211,51 @@ private:
 };
 
 App* askApp() { static Ask a; return &a; }
+
+bool chooseAssistant() {
+    struct Route { String label; ai::Provider provider; String backend; };
+    std::vector<Route> routes;
+
+    // Account-based first: these are logged in on the Mac, so there is no key
+    // to paste and nothing sensitive on the handheld.
+    auto backends = cloud::hostBackends();
+    if (backends.empty() && cloud::hostOnline())
+        backends = {"claude", "codex", "gemini"};
+    for (auto& b : backends) {
+        String pretty = b;
+        if (b == "codex") pretty = "ChatGPT";
+        else if (b.length()) pretty.setCharAt(0, toupper(b[0]));
+        routes.push_back({pretty + "  (Mac login)", ai::Provider::Host, b});
+    }
+
+    for (int i = 1; i < (int)ai::Provider::COUNT; i++) {
+        ai::Provider p = (ai::Provider)i;
+        routes.push_back({String(ai::spec(p).label) + "  " +
+                          (ai::configured(p) ? String("(key set)") : String("(needs key)")),
+                          p, ""});
+    }
+    if (routes.empty()) {
+        os::toast("no assistant available - add a key in Settings", os::Tone::Bad);
+        return false;
+    }
+
+    int cur = 0;
+    String curBackend = store::getStr("m_host", "claude");
+    for (size_t i = 0; i < routes.size(); i++) {
+        if (routes[i].provider != ai::preferred()) continue;
+        if (routes[i].provider == ai::Provider::Host && routes[i].backend != curBackend) continue;
+        cur = i;
+        break;
+    }
+
+    std::vector<String> labels;
+    for (auto& r : routes) labels.push_back(r.label);
+    int pick = ui::chooser("Ask who?", labels, cur);
+    if (pick < 0) return false;
+
+    ai::setPreferred(routes[pick].provider);
+    if (routes[pick].provider == ai::Provider::Host)
+        store::setStr("m_host", routes[pick].backend);
+    os::toast(String("now asking ") + routes[pick].label, os::Tone::Good);
+    return true;
+}

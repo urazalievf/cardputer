@@ -4,7 +4,7 @@
 Gives the handheld three things it cannot do alone:
 
   * Claude on your Max subscription, via the `claude` CLI, instead of API credits
-  * Claude Code with real tools, running in a real project directory
+  * a coding agent with real tools, running in a real project directory
   * your Obsidian vault, as an actual filesystem it can read and append to
 
 Plus local speech-to-text when whisper.cpp or faster-whisper is installed,

@@ -7,12 +7,15 @@
 #include "../kernel/ai.h"
 #include "../kernel/audio.h"
 #include "../kernel/bt.h"
+#include "../kernel/hw.h"
 #include <esp_heap_caps.h>
 
 // Everything the OS can be told. Entries are declared as data so adding a
 // preference is one line, and every value lands in NVS immediately.
 class Settings : public App {
-    enum Kind : uint8_t { HEADER, TOGGLE, SLIDER, ENUMSEL, STR, SECRET, ACTION, INFO, HUE };
+    enum Kind : uint8_t { HEADER, TOGGLE, SLIDER, ENUMSEL, STR, SECRET, ACTION, INFO, HUE,
+                          LAUNCH,   // opens another app; key is its name()
+                          ROUTE };  // the "ask who?" picker
     struct Entry {
         Kind kind;
         const char* label;
@@ -20,7 +23,7 @@ class Settings : public App {
         int lo = 0, hi = 0, step = 1;
         const char* def = "";
     };
-    enum Mode : uint8_t { LIST, EDIT, HUEPICK };
+    enum Mode : uint8_t { LIST, EDIT, HUEPICK, KEYTEST, COLORS, COLORPICK };
 
 public:
     const char* name() const override { return "Settings"; }
@@ -30,11 +33,16 @@ public:
     String title() const override {
         if (mode_ == EDIT)    return String("Edit ") + entries()[sel_].label;
         if (mode_ == HUEPICK) return "Accent colour";
+        if (mode_ == KEYTEST) return "Keyboard test";
+        if (mode_ == COLORS)  return String("Colours  ") + theme::presetName(theme::preset());
+        if (mode_ == COLORPICK) return theme::colorRoleName(role_);
         return "Settings";
     }
 
     bool onBack() override {
-        if (mode_ != LIST) { mode_ = LIST; return true; }
+        if (mode_ == COLORPICK) { theme::setColorRole(role_, original_); mode_ = COLORS; return true; }
+        if (mode_ == COLORS)    { mode_ = LIST; return true; }
+        if (mode_ != LIST)      { mode_ = LIST; return true; }
         return false;
     }
 
@@ -44,6 +52,9 @@ public:
         const auto& e = entries();
         if (mode_ == EDIT)    return keyEdit(k);
         if (mode_ == HUEPICK) return keyHue(k);
+        if (mode_ == KEYTEST) { last_ = k; os::invalidate(); return; }
+        if (mode_ == COLORS)    return keyColors(k);
+        if (mode_ == COLORPICK) return keyColorPick(k);
 
         if (k.up   || k.is('k')) { moveSel(-1); return; }
         if (k.down || k.is('j')) { moveSel(+1); return; }
@@ -63,6 +74,9 @@ public:
     void draw() override {
         if (mode_ == EDIT)    return drawEdit();
         if (mode_ == HUEPICK) return drawHue();
+        if (mode_ == KEYTEST)   return drawKeyTest();
+        if (mode_ == COLORS)    return drawColors();
+        if (mode_ == COLORPICK) return drawColorPick();
 
         const auto& e = entries();
         std::vector<ui::Row> rows;
@@ -89,14 +103,27 @@ private:
             {HEADER, "Appearance", ""},
             {ENUMSEL,"Theme",       "thpreset"},
             {HUE,    "Accent",      "thhue"},
+            {ACTION, "Edit colours","a_colors"},
+            {ACTION, "Reset colours","a_resetcolors"},
             {SLIDER, "Brightness",  "bright",   10, 255, 15},
             {TOGGLE, "Big text",    "thbig"},
             {TOGGLE, "Show hints",  "thhints"},
             {TOGGLE, "Status clock","thclock"},
             {TOGGLE, "Sounds",      "thsound"},
 
+            {HEADER, "Connectivity", ""},
+            {LAUNCH, "WiFi networks","WiFi"},
+            {LAUNCH, "Bluetooth",   "Bluetooth"},
+            {STR,    "Mac host",    "host"},
+            {SLIDER, "Mac port",    "hostport", 1, 65535, 1, "8787"},
+            {ACTION, "Find Mac",    "a_discover"},
+            {ACTION, "Test Mac",    "a_ping"},
+            {STR,    "Bluetooth name","btname",  0,0,1, "CardputerOS"},
+            {ACTION, "Forget WiFi", "a_wipewifi"},
+            {ACTION, "Scan Grove port","a_i2c"},
+
             {HEADER, "Assistant", ""},
-            {ENUMSEL,"Provider",    "aiprov"},
+            {ROUTE,  "Ask who?",    "route"},
             {TOGGLE, "Auto fallback","aifall"},
             {ENUMSEL,"Speech input","aistt"},
             {STR,    "Claude model","m_anthropic", 0,0,1, "claude-haiku-4-5-20251001"},
@@ -115,14 +142,6 @@ private:
             {SECRET, "OpenRouter",  "k_openrtr"},
             {STR,    "Ollama host", "ollamahost"},
 
-            {HEADER, "Connections", ""},
-            {STR,    "Mac host",    "host"},
-            {SLIDER, "Mac port",    "hostport", 1, 65535, 1, "8787"},
-            {ACTION, "Find Mac",    "a_discover"},
-            {ACTION, "Test Mac",    "a_ping"},
-            {STR,    "Bluetooth name","btname",  0,0,1, "CardputerOS"},
-            {ACTION, "Forget WiFi", "a_wipewifi"},
-
             {HEADER, "Notes & vault", ""},
             {STR,    "Vault folder","vault",     0,0,1, "Cardputer"},
             {ACTION, "Remount SD",  "a_sd"},
@@ -130,6 +149,9 @@ private:
             {HEADER, "System", ""},
             {STR,    "Timezone",    "tz",        0,0,1, "EST5EDT,M3.2.0,M11.1.0"},
             {ACTION, "Sync clock",  "a_ntp"},
+            {ACTION, "Keyboard test","a_keytest"},
+            {ACTION, "Test RGB LED","a_led"},
+            {SLIDER, "IR LED pin",  "irpin",     0, 48, 1, "44"},
             {ACTION, "Factory reset","a_reset"},
 
             {HEADER, "About", ""},
@@ -180,9 +202,26 @@ private:
                 return v.length() ? String("set:") + (int)v.length() : String("not set");
             }
             case ACTION:  return ">";
+            case LAUNCH:  return launchDetail(it.key);
+            case ROUTE:   return routeDetail();
             case INFO:    return info(it.key);
             default:      return "";
         }
+    }
+
+    static String launchDetail(const String& appName) {
+        if (appName == "WiFi")
+            return net::connected() ? ui::ellipsize(net::ssid(), 14) : String("offline");
+        if (appName == "Bluetooth") return bt::status();
+        return ">";
+    }
+
+    static String routeDetail() {
+        if (ai::preferred() != ai::Provider::Host) return ai::spec(ai::preferred()).label;
+        String be = store::getStr("m_host", "claude");
+        if (be == "codex") return "ChatGPT/Mac";
+        if (be.length()) be.setCharAt(0, toupper(be[0]));
+        return be + "/Mac";
     }
 
     static int defaultToggle(const char* key) {
@@ -279,6 +318,8 @@ private:
                 os::invalidate();
                 return;
             case ENUMSEL:  return openEnumChooser(it);
+            case LAUNCH:   os::launchByName(it.key); return;
+            case ROUTE:    chooseAssistant(); os::invalidate(); return;
             case STR:
             case SECRET:
                 buf_ = (it.kind == SECRET) ? String("") : store::getStr(it.key, it.def);
@@ -358,6 +399,83 @@ private:
         os::invalidate();
     }
 
+    // ---------- colour editor ----------
+    void keyColors(const KeyEvent& k) {
+        int n = theme::colorRoleCount();
+        if (k.up   || k.is('k')) { colorSel_ = (colorSel_ - 1 + n) % n; os::invalidate(); return; }
+        if (k.down || k.is('j')) { colorSel_ = (colorSel_ + 1) % n;     os::invalidate(); return; }
+        if (k.enter || k.space) {
+            role_ = colorSel_;
+            original_ = theme::colorRole(role_);
+            theme::toHsv(original_, h_, s_, v_);
+            bar_ = 0;
+            mode_ = COLORPICK;
+            os::invalidate();
+        }
+    }
+
+    void drawColors() {
+        int n = theme::colorRoleCount();
+        int rows = theme::bodyRows();
+        if (colorSel_ < colorScroll_) colorScroll_ = colorSel_;
+        if (colorSel_ >= colorScroll_ + rows) colorScroll_ = colorSel_ - rows + 1;
+        int rh = theme::rowHeight();
+
+        for (int i = 0; i < rows && colorScroll_ + i < n; i++) {
+            int idx = colorScroll_ + i;
+            int y = BODY_Y + i * rh;
+            bool sel = idx == colorSel_;
+            if (sel) ui::panel(1, y - 1, SCREEN_W - 5, rh, ui::c().selbg, 3);
+            // The swatch is the point: show the colour, not its hex value.
+            ui::gfx().fillRoundRect(5, y, 14, rh - 3, 2, theme::colorRole(idx));
+            ui::gfx().drawRoundRect(5, y, 14, rh - 3, 2, ui::c().border);
+            ui::text(24, y, theme::colorRoleName(idx), sel ? ui::c().selfg : ui::c().fg);
+        }
+        ui::hint("Enter edit   ` back");
+    }
+
+    void keyColorPick(const KeyEvent& k) {
+        if (k.esc) { theme::setColorRole(role_, original_); mode_ = COLORS; os::invalidate(); return; }
+        if (k.enter) { os::toast("colour saved", os::Tone::Good); mode_ = COLORS; os::invalidate(); return; }
+        if (k.up   || k.is('k')) { bar_ = (bar_ + 2) % 3; os::invalidate(); return; }
+        if (k.down || k.is('j')) { bar_ = (bar_ + 1) % 3; os::invalidate(); return; }
+        int step = k.shift ? 16 : 4;
+        int delta = (k.right || k.is('l')) ? step : (k.left || k.is('h')) ? -step : 0;
+        if (!delta) return;
+        if (bar_ == 0) h_ = (uint8_t)((h_ + delta + 256) % 256);
+        else if (bar_ == 1) s_ = (uint8_t)constrain((int)s_ + delta, 0, 255);
+        else v_ = (uint8_t)constrain((int)v_ + delta, 0, 255);
+        theme::setColorRole(role_, theme::fromHsv(h_, s_, v_));
+        os::invalidate();
+    }
+
+    void drawColorPick() {
+        auto& g = ui::gfx();
+        const char* names[] = {"hue", "saturation", "brightness"};
+        int vals[] = {h_, s_, v_};
+
+        for (int b = 0; b < 3; b++) {
+            int y = BODY_Y + 4 + b * 22;
+            for (int x = 0; x < SCREEN_W - 40; x++) {
+                uint8_t t = (uint8_t)(x * 255 / (SCREEN_W - 41));
+                uint16_t col = b == 0 ? theme::fromHsv(t, s_ ? s_ : 255, v_ ? v_ : 255)
+                             : b == 1 ? theme::fromHsv(h_, t, v_ ? v_ : 255)
+                                      : theme::fromHsv(h_, s_, t);
+                g.drawFastVLine(4 + x, y, 12, col);
+            }
+            int mx = 4 + vals[b] * (SCREEN_W - 41) / 255;
+            g.drawFastVLine(mx, y - 2, 16, b == bar_ ? ui::c().fg : ui::c().border);
+            ui::text(SCREEN_W - 34, y + 2, String(vals[b]), b == bar_ ? ui::c().fg : ui::c().dim);
+            if (b == bar_) ui::text(4, y + 14, names[b], ui::c().dim);
+        }
+
+        // Live preview using the colour in its actual role.
+        ui::panel(4, BODY_Y + 74, SCREEN_W - 8, 18, ui::c().surface, 4);
+        ui::gfx().fillRoundRect(8, BODY_Y + 77, 12, 12, 2, theme::colorRole(role_));
+        ui::text(26, BODY_Y + 79, theme::colorRoleName(role_), ui::c().fg);
+        ui::hint("arrows adjust  shift=faster  Enter save  ` undo");
+    }
+
     // ---------- hue picker ----------
     void keyHue(const KeyEvent& k) {
         if (k.left  || k.is('h')) { hue_ = (hue_ - 4 + 256) % 256; theme::setAccentHue(hue_); }
@@ -384,6 +502,45 @@ private:
         ui::text(16, BODY_Y + 55, String("hue ") + hue_, ui::c().dim);
         ui::progress(8, BODY_Y + 74, SCREEN_W - 16, 8, hue_ / 255.0f, ui::c().accent);
         ui::hint("< > pick   Enter save   R reset   ` back");
+    }
+
+    // A live view of exactly what the keyboard reports. Arrows on this device
+    // are the ; . , / keycaps, and this is the fastest way to prove it.
+    void drawKeyTest() {
+        int y = BODY_Y + 2;
+        String chars;
+        for (char ch : last_.chars) { chars += ch; chars += ' '; }
+        ui::text(4, y, "chars: " + (chars.length() ? chars : String("-")), ui::c().fg);
+
+        String arrows;
+        if (last_.up) arrows += "UP ";
+        if (last_.down) arrows += "DOWN ";
+        if (last_.left) arrows += "LEFT ";
+        if (last_.right) arrows += "RIGHT ";
+        ui::text(4, y + 13, "arrows: " + (arrows.length() ? arrows : String("-")),
+                 arrows.length() ? ui::c().good : ui::c().dim);
+
+        String mods;
+        if (last_.fn) mods += "fn ";
+        if (last_.ctrl) mods += "ctrl ";
+        if (last_.shift) mods += "shift ";
+        if (last_.opt) mods += "opt ";
+        if (last_.alt) mods += "alt ";
+        ui::text(4, y + 26, "mods: " + (mods.length() ? mods : String("-")),
+                 mods.length() ? ui::c().accent2 : ui::c().dim);
+
+        String special;
+        if (last_.enter) special += "enter ";
+        if (last_.del) special += "bksp ";
+        if (last_.tab) special += "tab ";
+        if (last_.space) special += "space ";
+        if (last_.esc) special += "esc ";
+        ui::text(4, y + 39, "keys: " + (special.length() ? special : String("-")),
+                 special.length() ? ui::c().warn : ui::c().dim);
+
+        ui::text(4, y + 58, "Arrows are the ; . , / keycaps.", ui::c().dim);
+        ui::text(4, y + 69, "fn makes them arrows only.", ui::c().dim);
+        ui::hint("press anything   ` exits");
     }
 
     // ---------- actions ----------
@@ -413,6 +570,41 @@ private:
                 for (auto& s : net::savedNetworks()) net::forgetNetwork(s);
                 os::toast("all networks forgotten", os::Tone::Good);
             }
+        } else if (key == "a_keytest") {
+            last_ = KeyEvent();
+            mode_ = KEYTEST;
+            os::invalidate();
+            return;
+        } else if (key == "a_colors") {
+            colorSel_ = 0;
+            mode_ = COLORS;
+            os::invalidate();
+            return;
+        } else if (key == "a_resetcolors") {
+            if (ui::confirm("Reset custom colours to the Midnight preset?")) {
+                theme::resetCustomToPreset(0);
+                theme::setPreset(0);
+                os::toast("colours reset", os::Tone::Good);
+            }
+        } else if (key == "a_i2c") {
+            ui::busy("Scanning Grove port");
+            auto found = hw::i2cScan();
+            if (found.empty()) {
+                os::toast("nothing on the Grove port", os::Tone::Bad);
+            } else {
+                std::vector<String> rows;
+                for (auto& d : found) {
+                    char b[8];
+                    snprintf(b, sizeof(b), "0x%02X", d.addr);
+                    rows.push_back(String(b) + "  " + d.guess);
+                }
+                ui::chooser(String((int)found.size()) + " device(s)", rows, 0);
+            }
+        } else if (key == "a_led") {
+            hw::ledPulse(255, 0, 0, 200);
+            hw::ledPulse(0, 255, 0, 200);
+            hw::ledPulse(0, 0, 255, 200);
+            os::toast("LED should have flashed R/G/B");
         } else if (key == "a_reset") {
             if (ui::confirm("Erase all settings, keys and WiFi? Notes on the SD card are kept.")) {
                 store::factoryReset();
@@ -427,6 +619,10 @@ private:
     Mode mode_ = LIST;
     int sel_ = 1, scroll_ = 0, hue_ = 0;
     String buf_;
+    KeyEvent last_;
+    int colorSel_ = 0, colorScroll_ = 0, role_ = 0, bar_ = 0;
+    uint16_t original_ = 0;
+    uint8_t h_ = 0, s_ = 0, v_ = 0;
 };
 
 App* settingsApp() { static Settings a; return &a; }

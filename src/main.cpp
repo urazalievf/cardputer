@@ -3,18 +3,27 @@
 // The kernel owns the display, the keyboard, the radios and storage; apps are
 // plain C++ objects that draw into a 240x135 frame and get normalized keys.
 #include "kernel/os.h"
+#include "kernel/hw.h"
 #include "apps/apps.h"
 
 void setup() {
     os::begin();
+    hw::ledBegin();
 
-    // apps()[0] is the launcher; 1..8 are the number-key shortcuts, and the
-    // launcher grid is 4x2, so eight is the natural cap before it scrolls.
+    // apps()[0] is the launcher. Number keys address the *visible* ones, so
+    // WiFi and Bluetooth (hidden, reached from Settings) don't consume a slot.
     os::registerApp(launcherApp());
     os::registerApp(notesApp());
     os::registerApp(voiceApp());
     os::registerApp(askApp());
     os::registerApp(codeApp());
+    os::registerApp(translateApp());
+    os::registerApp(tasksApp());
+    os::registerApp(calcApp());
+    os::registerApp(timerApp());
+    os::registerApp(weatherApp());
+    os::registerApp(remoteApp());
+    os::registerApp(shareApp());
     os::registerApp(wifiApp());
     os::registerApp(bluetoothApp());
     os::registerApp(filesApp());
