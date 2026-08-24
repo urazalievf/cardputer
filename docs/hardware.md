@@ -14,6 +14,9 @@
 | SD | SPI: SCK 40, MISO 39, MOSI 14, CS 12 |
 | Battery | 120 mAh internal, 1400 mAh in the base |
 | Bluetooth | BLE only — no Classic, no A2DP, no SPP |
+| RGB LED | WS2812 on GPIO21 (on the StampS3 itself) |
+| Grove Port A | I2C — SCL on G1, SDA on G2 |
+| Infrared | transmit only, G44 by default (configurable) |
 | Extras | Grove port, IR, USB-C |
 
 ## Things that bite
@@ -69,6 +72,19 @@ libs ship BT enabled and cost ~290KB of flash.
 **Radio coexistence.** BLE and WiFi share one antenna. BLE runs at
 `ESP_PWR_LVL_P3` and only while the Bluetooth app is open, which keeps both
 usable and reclaims ~60KB of heap the rest of the time.
+
+**Never mask interrupts across an IR frame.** This one hangs the board outright.
+A 32-bit NEC frame takes ~70ms; holding `noInterrupts()` for that long starves
+WiFi and trips the task watchdog. Worse, Sony wants its frame repeated three
+times ~24ms apart, and `delay()` inside a masked window *never returns* — it
+yields to FreeRTOS, which needs the tick interrupt to resume the caller. The
+driver now masks only for the duration of a single mark or space, spins on
+`micros()` for short gaps, and yields properly for long ones.
+
+**The RGB LED is on the StampS3, not the Cardputer board.** GPIO21, a single
+WS2812, driven by the core's own `rgbLedWrite()` — no library needed. It is
+worth using: it is the only output visible when the screen is face-down, which
+is exactly the situation while recording a voice memo.
 
 **Flashing.** Usually just works over USB CDC. If the port doesn't appear, hold
 the G0 button on the StampS3 while plugging in to force download mode.

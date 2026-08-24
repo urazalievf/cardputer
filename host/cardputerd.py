@@ -3,7 +3,8 @@
 
 Gives the handheld three things it cannot do alone:
 
-  * Claude on your Max subscription, via the `claude` CLI, instead of API credits
+  * assistants you are already logged into: the claude, codex and gemini CLIs
+    authenticate with your account, so no API key ever reaches the handheld
   * a coding agent with real tools, running in a real project directory
   * your Obsidian vault, as an actual filesystem it can read and append to
 

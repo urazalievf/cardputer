@@ -6,15 +6,18 @@
 apps/     notes voice ask code translate tasks calc timer weather
           files settings   (+ wifi, bluetooth: hidden, opened from settings)
           ────────────────────────────────────────────────
-kernel/   os      app registry, nav stack, event loop, global keys
-          ui      canvas rendering, widgets, modals
-          theme   palettes, accent, density — all user-editable, all in NVS
-          ai      provider routing: 7 backends behind one chat()/transcribe()
-          cloud   the Mac daemon: agent CLIs, whisper, Obsidian vault
-          net     scan / join / autojoin / NTP
-          bt      BLE scanner and HID keyboard, started on demand
-          store   NVS config + SD filesystem, GPIO40 arbitration
-          audio   chunked capture, lazily allocated buffer, WAV framing
+kernel/   os        app registry, nav stack, event loop, global keys
+          ui        canvas rendering, widgets, modals, await()
+          theme     palettes, per-role colours, density — user-editable, in NVS
+          ai        provider routing: 7 backends behind one chat()/transcribe()
+          cloud     the Mac daemon: agent CLIs, whisper, Obsidian vault
+          net       scan / join / autojoin / NTP
+          bt        BLE scanner and HID keyboard, started on demand
+          hw        RGB LED, Grove I2C, infrared transmit
+          store     NVS config + SD filesystem, GPIO40 arbitration, mount backoff
+          audio     chunked capture, lazy buffer, waveform envelope, WAV framing
+          expr      the arithmetic parser, split out so it can be tested
+          selftest  201 on-device checks (built only into cardputer-selftest)
 ```
 
 ## The loop
@@ -33,13 +36,21 @@ loop()
 Drawing is pull-based and lazy. Nothing repaints until something calls
 `os::invalidate()`, so an idle screen costs one keyboard poll per 15 ms.
 
-Long operations paint their own intermediate frame before blocking:
+## Long operations
+
+A blocking network call on the UI core paints one frozen frame and looks exactly
+like a crash. `ui::await()` runs the work on core 0 and animates until it
+finishes:
 
 ```cpp
-mode_ = BUSY;
-ui::clear(); draw(); ui::statusBar(title().c_str());   // show "Thinking..."
-auto r = cloud::ask(prompt);                            // now block
+ai::Result r;
+ui::await("Asking Claude", [&] { r = ai::chat(convo, SYSTEM, 400); });
 ```
+
+The worker gets a 16KB stack, because a TLS handshake alone wants 8–10KB. If the
+task cannot be created it falls back to running inline, so the call never fails
+just because memory is tight. Every AI, transcription, vault, weather, mDNS and
+WiFi-join call site goes through it.
 
 `Voice` avoids blocking entirely — `tick()` grabs one 100 ms chunk per pass, so
 the level meter stays live during a five-second recording.
@@ -104,15 +115,23 @@ Three things want the same internal RAM on a board with no PSRAM:
 | | cost | when |
 |---|---|---|
 | UI canvas | 64 KB | always, if it fits |
-| audio buffer | up to 137 KB | only while recording |
+| audio buffer | up to 200 KB | only while recording |
 | BLE stack | ~60 KB | only while the Bluetooth app is open |
 | TLS handshake | ~45 KB | during any cloud call |
+| await() worker | 16 KB | for the duration of one network call |
 
 None of them is permanent. `Voice::start()` calls `ui::releaseCanvas()` before
 `audio::recordStart()` and re-acquires it after transcription; `ui` tells `audio`
-how much it is holding via `setReclaimableBytes()` so the capacity estimate
+how much it is holding via `setReclaimableBytes()` so the *advertised* capacity
 reflects what will be available, not what is free right now. That is why the mic
-reports 4 seconds while only 145 KB is free.
+reports 4 seconds while only 141 KB is free.
+
+Advertising and allocating are deliberately different calculations, and
+conflating them was a real bug. `capacitySamples()` may count memory the caller
+is expected to hand back; `allocBuffer()` may not. It sizes from
+`heap_caps_get_largest_free_block()` — the total being sufficient means nothing
+if it is fragmented — and backs off in 25% steps rather than failing outright,
+because a shorter memo beats no memo.
 
 ## Provider routing, with fallback
 
@@ -150,3 +169,20 @@ filesystem isn't an agent.
 
 Note filenames are `YYYYMMDD-HHMMSS-slug.md`, so a reverse lexicographic sort is
 newest-first and no index is needed.
+
+A failed SD mount costs two `SD.begin()` attempts, roughly 200ms. Without a
+backoff every `listNotes()` on a card-less device pays that, which reads as lag
+rather than as a missing card. `sdAcquire()` refuses to retry for 3 seconds
+after a failure; remounts driven from the UI pass `force=true` to skip it.
+
+## Testing
+
+`kernel/selftest.cpp` is compiled only into the `cardputer-selftest` environment,
+runs from `setup()` after waiting up to 4s for a serial monitor to attach, and
+prints one line per check. It exists because the interesting failures on this
+device are not compile errors — they are a parser that mishandles `2^3^2`, an
+allocation that only fails when the canvas is up, or an interrupt mask that
+hangs the board. Those need to run on real hardware to show up.
+
+The arithmetic parser lives in `kernel/expr` rather than inside the Calc app
+specifically so the suite can drive it directly.
