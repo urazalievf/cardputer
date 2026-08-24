@@ -1,8 +1,14 @@
 #include "hw.h"
 #include "store.h"
 #include <Wire.h>
-#include <driver/rmt_tx.h>
 #include <esp32-hal-rgb-led.h>
+
+// rgbLedWrite() is the current name; neopixelWrite() is deprecated in IDF 5.5.
+#ifndef rgbLedWrite
+#define CARDPUTER_RGB_WRITE rgbLedWrite
+#else
+#define CARDPUTER_RGB_WRITE rgbLedWrite
+#endif
 
 namespace hw {
 
@@ -17,10 +23,10 @@ void ledBegin() { s_ledReady = true; ledOff(); }
 
 void led(uint8_t r, uint8_t g, uint8_t b) {
     if (!s_ledReady) ledBegin();
-    neopixelWrite(LED_PIN, r, g, b);     // in the core's HAL; no library needed
+    CARDPUTER_RGB_WRITE(LED_PIN, r, g, b);   // in the core's HAL; no library needed
 }
 
-void ledOff() { neopixelWrite(LED_PIN, 0, 0, 0); }
+void ledOff() { CARDPUTER_RGB_WRITE(LED_PIN, 0, 0, 0); }
 
 void ledPulse(uint8_t r, uint8_t g, uint8_t b, uint16_t ms) {
     led(r, g, b);
@@ -86,23 +92,37 @@ uint8_t irPin() { return (uint8_t)store::getInt("irpin", 44); }
 void setIrPin(uint8_t p) { store::setInt("irpin", p); }
 
 // Bit-banged carrier. A hardware timer would jitter less, but IR receivers
-// demodulate with a wide tolerance and this keeps the driver dependency-free.
+// demodulate with wide tolerance and this keeps the driver dependency-free.
+//
+// Interrupts are masked only for the duration of one mark or space -- never
+// across a whole frame. Masking for ~70ms would starve WiFi and trip the task
+// watchdog, and any delay() taken while masked never returns at all, because
+// FreeRTOS needs the tick interrupt to resume the caller.
+static portMUX_TYPE s_irMux = portMUX_INITIALIZER_UNLOCKED;
+static uint8_t s_irPinCached = 44;
+
 static void mark(uint32_t us, uint16_t carrierHz) {
-    uint8_t pin = irPin();
-    uint32_t halfPeriod = 500000UL / carrierHz;      // microseconds, half a cycle
-    uint32_t end = micros() + us;
-    while ((int32_t)(end - micros()) > 0) {
-        digitalWrite(pin, HIGH);
+    const uint32_t halfPeriod = 500000UL / carrierHz;   // half a carrier cycle, us
+    portENTER_CRITICAL(&s_irMux);
+    uint32_t start = micros();
+    while (micros() - start < us) {
+        digitalWrite(s_irPinCached, HIGH);
         delayMicroseconds(halfPeriod);
-        digitalWrite(pin, LOW);
+        digitalWrite(s_irPinCached, LOW);
         delayMicroseconds(halfPeriod);
     }
+    portEXIT_CRITICAL(&s_irMux);
 }
 
 static void space(uint32_t us) {
-    digitalWrite(irPin(), LOW);
-    uint32_t end = micros() + us;
-    while ((int32_t)(end - micros()) > 0) {}
+    digitalWrite(s_irPinCached, LOW);
+    if (us == 0) return;
+    // Long gaps yield instead of spinning, so the scheduler still runs.
+    if (us > 4000) { delayMicroseconds(2000); delay((us - 2000) / 1000); return; }
+    portENTER_CRITICAL(&s_irMux);
+    uint32_t start = micros();
+    while (micros() - start < us) {}
+    portEXIT_CRITICAL(&s_irMux);
 }
 
 static void sendNecLike(uint32_t data, int bits, uint32_t hdrMark, uint32_t hdrSpace,
@@ -117,16 +137,12 @@ static void sendNecLike(uint32_t data, int bits, uint32_t hdrMark, uint32_t hdrS
     space(0);
 }
 
-static void sendSony(uint32_t data, int bits) {
-    // Sony wants the frame repeated at least three times to be accepted.
-    for (int rep = 0; rep < 3; rep++) {
-        mark(2400, 40000);
+static void sendSonyFrame(uint32_t data, int bits) {
+    mark(2400, 40000);
+    space(600);
+    for (int i = 0; i < bits; i++) {               // Sony is LSB-first
+        if ((data >> i) & 1) mark(1200, 40000); else mark(600, 40000);
         space(600);
-        for (int i = 0; i < bits; i++) {           // Sony is LSB-first
-            if ((data >> i) & 1) mark(1200, 40000); else mark(600, 40000);
-            space(600);
-        }
-        delay(24);
     }
 }
 
@@ -141,11 +157,10 @@ static void sendRc5(uint32_t data, int bits) {
 }
 
 void irSend(IrProto proto, uint32_t address, uint32_t command) {
-    uint8_t pin = irPin();
-    pinMode(pin, OUTPUT);
-    digitalWrite(pin, LOW);
+    s_irPinCached = irPin();        // read once: NVS must not be touched mid-frame
+    pinMode(s_irPinCached, OUTPUT);
+    digitalWrite(s_irPinCached, LOW);
 
-    noInterrupts();                 // timing here is the whole protocol
     switch (proto) {
         case IrProto::NEC: {
             uint8_t a = address & 0xFF, c = command & 0xFF;
@@ -162,11 +177,18 @@ void irSend(IrProto proto, uint32_t address, uint32_t command) {
             break;
         }
         case IrProto::SonySIRC12:
-            sendSony(((address & 0x1F) << 7) | (command & 0x7F), 12);
+        case IrProto::SonySIRC20: {
+            // Sony receivers want the frame at least three times, 45ms apart.
+            // The gap is a real delay() -- outside any critical section.
+            bool wide = proto == IrProto::SonySIRC20;
+            uint32_t frame = wide ? (((address & 0x1FFF) << 7) | (command & 0x7F))
+                                  : (((address & 0x1F) << 7) | (command & 0x7F));
+            for (int rep = 0; rep < 3; rep++) {
+                sendSonyFrame(frame, wide ? 20 : 12);
+                delay(24);
+            }
             break;
-        case IrProto::SonySIRC20:
-            sendSony(((address & 0x1FFF) << 7) | (command & 0x7F), 20);
-            break;
+        }
         case IrProto::RC5: {
             uint32_t frame = (1 << 13) | (1 << 12) |          // start bits
                              ((address & 0x1F) << 6) | (command & 0x3F);
@@ -175,8 +197,7 @@ void irSend(IrProto proto, uint32_t address, uint32_t command) {
         }
         default: break;
     }
-    interrupts();
-    digitalWrite(pin, LOW);
+    digitalWrite(s_irPinCached, LOW);
 }
 
 }  // namespace hw

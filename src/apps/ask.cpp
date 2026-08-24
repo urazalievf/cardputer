@@ -129,8 +129,8 @@ private:
             os::invalidate();
             return false;
         }
-        ui::busy("Transcribing");
-        auto r = ai::transcribe(audio::pcm(), n);
+        ai::Result r;
+        ui::await("Transcribing", [&] { r = ai::transcribe(audio::pcm(), n); });
         audio::freeBuffer();
         ui::acquireCanvas();
         if (!r.ok) { os::toast(r.error, os::Tone::Bad); os::invalidate(); return false; }
@@ -147,13 +147,12 @@ private:
         history_.push_back({"user", msg});
         push("You", msg, ui::c().warn);
 
-        ui::busy(String("Asking ") + routeLabel());
-
         std::vector<ai::Msg> convo;
         size_t start = history_.size() > 12 ? history_.size() - 12 : 0;
         for (size_t i = start; i < history_.size(); i++) convo.push_back(history_[i]);
 
-        auto r = ai::chat(convo, SYSTEM, 400);
+        ai::Result r;
+        ui::await(String("Asking ") + routeLabel(), [&] { r = ai::chat(convo, SYSTEM, 400); });
         String reply = r.ok ? r.text : ("[" + r.error + "]");
         history_.push_back({"assistant", reply});
         push(r.ok ? String(r.usedLabel()) : String("error"), reply,

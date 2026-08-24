@@ -144,9 +144,9 @@ private:
             return;
         }
         if (k.is('s')) {
-            ui::busy("Syncing to vault");
             String sub = store::getStr(store::K_VAULT, "Cardputer");
-            auto r = cloud::vaultWrite(sub + "/" + current_, body_);
+            cloud::Result r;
+            ui::await("Syncing to vault", [&] { r = cloud::vaultWrite(sub + "/" + current_, body_); });
             os::toast(r.ok ? "synced to Obsidian" : r.error,
                       r.ok ? os::Tone::Good : os::Tone::Bad);
             os::invalidate();
@@ -211,10 +211,12 @@ private:
 
     void runAsk() {
         if (!question_.length()) return;
-        ui::busy("Thinking");
-        auto r = ai::ask("Note:\n" + body_ + "\n\nQuestion: " + question_,
-                         "You are answering about a note on a 240x135 handheld. Plain text "
-                         "only, no markdown, under 400 characters.", 300);
+        ai::Result r;
+        ui::await("Thinking", [&] {
+            r = ai::ask("Note:\n" + body_ + "\n\nQuestion: " + question_,
+                        "You are answering about a note on a 240x135 handheld. Plain text "
+                        "only, no markdown, under 400 characters.", 300);
+        });
         answer_ = r.ok ? r.text : ("[" + r.error + "]");
         os::toast(r.ok ? String("via ") + r.usedLabel() : r.error,
                   r.ok ? os::Tone::Good : os::Tone::Bad);

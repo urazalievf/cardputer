@@ -5,6 +5,9 @@
 #include "kernel/os.h"
 #include "kernel/hw.h"
 #include "apps/apps.h"
+#ifdef SELFTEST
+#include "kernel/selftest.h"
+#endif
 
 void setup() {
     os::begin();
@@ -28,6 +31,12 @@ void setup() {
     os::registerApp(bluetoothApp());
     os::registerApp(filesApp());
     os::registerApp(settingsApp());
+
+#ifdef SELFTEST
+    // Wait for a monitor to attach so the results are not written into the void.
+    for (uint32_t t = millis(); !Serial && millis() - t < 4000;) delay(50);
+    selftest::run();
+#endif
 
     os::apps()[0]->onEnter();
     os::invalidate();

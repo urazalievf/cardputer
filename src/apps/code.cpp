@@ -105,8 +105,10 @@ private:
         String p = prompt_;
         p.trim();
         if (!p.length()) return;
-        ui::busy(backend() + " is working");
-        auto r = cloud::code(p, store::getStr("project", ""), backend());
+        cloud::Result r;
+        String proj = store::getStr("project", "");
+        String be = backend();
+        ui::await(be + " is working", [&] { r = cloud::code(p, proj, be); });
         output_ = r.ok ? r.text : ("[" + r.error + "]");
         if (r.ok) prompt_ = "";
         else os::toast(r.error, os::Tone::Bad);

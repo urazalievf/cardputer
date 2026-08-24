@@ -546,14 +546,15 @@ private:
     // ---------- actions ----------
     void runAction(const String& key) {
         if (key == "a_discover") {
-            ui::busy("Looking for the Mac");
-            os::toast(cloud::discoverHost()
+            bool found = false;
+            ui::await("Looking for the Mac", [&] { found = cloud::discoverHost(); });
+            os::toast(found
                           ? "found " + store::getStr(store::K_HOST, "")
                           : "no daemon advertised",
                       cloud::hostOnline() ? os::Tone::Good : os::Tone::Bad);
         } else if (key == "a_ping") {
-            ui::busy("Pinging daemon");
-            bool ok = cloud::pingHost(3000);
+            bool ok = false;
+            ui::await("Pinging daemon", [&] { ok = cloud::pingHost(3000); });
             os::toast(ok ? "daemon OK  " + cloud::hostFeatures() : "no answer",
                       ok ? os::Tone::Good : os::Tone::Bad);
         } else if (key == "a_ntp") {
@@ -562,7 +563,7 @@ private:
                       net::timeValid() ? os::Tone::Good : os::Tone::Bad);
         } else if (key == "a_sd") {
             store::sdRelease();
-            bool ok = store::sdAcquire();
+            bool ok = store::sdAcquire(/*force=*/true);
             os::toast(ok ? "SD mounted" : "no card, or not FAT32",
                       ok ? os::Tone::Good : os::Tone::Bad);
         } else if (key == "a_wipewifi") {
@@ -587,8 +588,8 @@ private:
                 os::toast("colours reset", os::Tone::Good);
             }
         } else if (key == "a_i2c") {
-            ui::busy("Scanning Grove port");
-            auto found = hw::i2cScan();
+            std::vector<hw::I2CDevice> found;
+            ui::await("Scanning Grove port", [&] { found = hw::i2cScan(); });
             if (found.empty()) {
                 os::toast("nothing on the Grove port", os::Tone::Bad);
             } else {

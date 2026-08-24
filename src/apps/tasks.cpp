@@ -113,9 +113,10 @@ private:
     }
 
     void syncVault() {
-        ui::busy("Syncing tasks");
         String sub = store::getStr(store::K_VAULT, "Cardputer");
-        auto r = cloud::vaultWrite(sub + "/tasks.md", asMarkdown());
+        String md = asMarkdown();
+        cloud::Result r;
+        ui::await("Syncing tasks", [&] { r = cloud::vaultWrite(sub + "/tasks.md", md); });
         os::toast(r.ok ? "tasks synced" : r.error, r.ok ? os::Tone::Good : os::Tone::Bad);
         os::invalidate();
     }

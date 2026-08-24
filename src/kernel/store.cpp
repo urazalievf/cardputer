@@ -16,6 +16,7 @@ static Preferences prefs;
 static bool s_mounted = false;      // currently holding GPIO40 with SD mounted
 static bool s_cardPresent = false;  // a card mounted successfully at least once
 static uint64_t s_sizeMB = 0, s_usedMB = 0;
+static uint32_t s_lastFail = 0;
 
 void begin() {
     prefs.begin("cfg", false);
@@ -73,8 +74,12 @@ void sdRelease() {
     s_mounted = false;
 }
 
-bool sdAcquire() {
+bool sdAcquire(bool force) {
     if (s_mounted) return true;
+    // A failed mount costs two SD.begin attempts, ~200ms. Without a backoff
+    // every listNotes() on a card-less device pays that, which reads as lag.
+    // Explicit remounts from the UI pass force=true.
+    if (!force && s_lastFail && millis() - s_lastFail < 3000) return false;
     // Evict audio: the I2S bit clock and the SD clock are both GPIO40.
     audio::releaseI2S();
     SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
@@ -90,9 +95,11 @@ bool sdAcquire() {
                      t, SD.cardSize() / (1024ULL * 1024ULL));
         }
         s_cardPresent = true;
+        s_lastFail = 0;
         s_sizeMB = SD.totalBytes() / (1024ULL * 1024ULL);
         s_usedMB = SD.usedBytes() / (1024ULL * 1024ULL);
     } else {
+        s_lastFail = millis() ? millis() : 1;
         // The card can enumerate fine and still fail here: the Arduino SD
         // library mounts FAT16/FAT32 only, and any card 64GB+ ships exFAT.
         // Watch the serial log for "no valid FAT volume" to tell them apart.
@@ -102,7 +109,7 @@ bool sdAcquire() {
     return s_mounted;
 }
 
-bool sdMount() { return sdAcquire(); }
+bool sdMount(bool force) { return sdAcquire(force); }
 
 // Cached so the status bar can read them without stealing GPIO40 from the mic.
 uint64_t sdTotalMB() { return s_sizeMB; }

@@ -525,4 +525,42 @@ void busy(const String& message) {
     endFrame();
 }
 
+namespace {
+struct AwaitCtx {
+    std::function<void()>* work;
+    volatile bool done;
+};
+
+void awaitTrampoline(void* arg) {
+    AwaitCtx* ctx = (AwaitCtx*)arg;
+    (*ctx->work)();
+    ctx->done = true;
+    vTaskDelete(nullptr);
+}
+}  // namespace
+
+void await(const String& message, std::function<void()> work) {
+    AwaitCtx ctx{&work, false};
+    TaskHandle_t handle = nullptr;
+    // 16KB: a TLS handshake alone wants ~8-10KB of stack.
+    BaseType_t ok = xTaskCreatePinnedToCore(awaitTrampoline, "await", 16384, &ctx,
+                                            1, &handle, 0);
+    if (ok != pdPASS) { busy(message); work(); return; }
+
+    uint32_t t0 = millis();
+    while (!ctx.done) {
+        beginFrame();
+        spinner(SCREEN_W / 2, 48, c().accent);
+        centered(70, message, c().fg);
+        uint32_t secs = (millis() - t0) / 1000;
+        if (secs >= 2) centered(84, String(secs) + "s", c().dim);
+        statusBar(message, Icon::Cloud);
+        hint(secs > 20 ? "still going - the other end is slow" : "working...");
+        endFrame();
+        delay(70);
+    }
+    // Give the worker a moment to actually unwind before its stack is reused.
+    delay(20);
+}
+
 }  // namespace ui

@@ -29,8 +29,8 @@ static const char* K_TZ          = "tz";         // POSIX TZ string for NTP
 
 // --- SD card ---
 bool sdReady();          // a working card was seen, whether or not it's mounted now
-bool sdMount();          // safe to call repeatedly
-bool sdAcquire();        // claim GPIO40 from audio and mount; every SD op calls this
+bool sdMount(bool force = false);     // safe to call repeatedly
+bool sdAcquire(bool force = false);  // claim GPIO40 from audio; every SD op calls this
 void sdRelease();        // unmount so audio can have GPIO40 back
 uint64_t sdTotalMB();
 uint64_t sdUsedMB();

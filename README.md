@@ -147,6 +147,15 @@ pio run -e cardputer -t upload
 pio device monitor          # boot diagnostics re-print whenever you attach
 ```
 
+### Tests
+
+`pio run -e cardputer-selftest -t upload` builds the same firmware plus an
+on-device battery that runs at boot and prints a PASS/FAIL line per check over
+USB serial — 201 checks covering the expression parser, text wrapping, config
+and note storage, theme and colour round-trips, the provider table, the WiFi
+store, buffer allocation, IR timing, the app registry, and heap behaviour
+across a canvas release/acquire cycle. It is not built into the shipping image.
+
 ## The Mac daemon
 
 ```bash

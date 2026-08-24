@@ -40,6 +40,21 @@
 - RGB LED (GPIO21) as a recording indicator, Grove I2C scanner with a
   device-name table
 
+### Fixed in testing
+- **IR froze the device.** `irSend()` masked interrupts across a whole frame and
+  `sendSony()` called `delay()` inside that window — with the tick interrupt off,
+  `delay()` never returns. Critical sections are now per-mark, and the inter-frame
+  gap is a real delay outside them.
+- **Network calls looked like crashes.** Every one painted a single static frame
+  and blocked for up to 30s. `ui::await()` now runs the work on the other core
+  and animates a spinner with an elapsed counter.
+- **The capture buffer refused to allocate** whenever the UI canvas was still
+  held: it sized itself against memory it *expected* to be freed rather than
+  memory that was actually free, and ignored fragmentation. It now works from
+  the largest contiguous block and backs off instead of failing outright.
+- **Card-less devices paid ~200ms per note operation** retrying the SD mount.
+  A 3-second backoff cut ten listings from ~470ms to 11ms.
+
 ## v0.3 — next
 - **Text cursor.** The editor still only appends and backspaces. Needs a caret
   with `fn`+arrows and word motions. This is the biggest remaining papercut.

@@ -194,10 +194,10 @@ private:
         have_ = false;
         metric_ = store::getInt("wxmetric", 0) != 0;
         if (!net::connected()) { err_ = "no wifi"; os::invalidate(); return; }
-        ui::busy("Checking the sky");
-
         String err;
-        if (!resolveLocation(err)) { err_ = err; os::invalidate(); return; }
+        bool located = false;
+        ui::await("Finding you", [&] { located = resolveLocation(err); });
+        if (!located) { err_ = err; os::invalidate(); return; }
 
         String url = "http://api.open-meteo.com/v1/forecast?latitude=" + String(lat_, 4) +
                      "&longitude=" + String(lon_, 4) +
@@ -208,7 +208,9 @@ private:
         if (!metric_) url += "&temperature_unit=fahrenheit&wind_speed_unit=mph";
 
         JsonDocument doc;
-        if (!getJson(url, doc, err)) { err_ = err; os::invalidate(); return; }
+        bool got = false;
+        ui::await("Checking the sky", [&] { got = getJson(url, doc, err); });
+        if (!got) { err_ = err; os::invalidate(); return; }
 
         JsonObject cur = doc["current"];
         temp_ = cur["temperature_2m"].as<float>();

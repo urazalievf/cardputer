@@ -104,7 +104,7 @@ private:
     void keyBrowse(const KeyEvent& k) {
         if (k.is('m')) {
             store::sdRelease();
-            bool ok = store::sdAcquire();
+            bool ok = store::sdAcquire(/*force=*/true);
             refresh();
             os::toast(ok ? "mounted" : "no card, or not FAT32",
                       ok ? os::Tone::Good : os::Tone::Bad);

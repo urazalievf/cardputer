@@ -173,8 +173,9 @@ private:
             return;
         }
         mode_ = RESULT;
-        ui::busy("Transcribing " + String(audio::recordedSeconds(), 1) + "s");
-        auto r = ai::transcribe(audio::pcm(), n);
+        ai::Result r;
+        ui::await("Transcribing " + String(audio::recordedSeconds(), 1) + "s",
+                  [&] { r = ai::transcribe(audio::pcm(), n); });
         // Hold the samples so P can play them back; the canvas comes back only
         // if there is room for both, otherwise the buffer wins until you leave.
         havePcm_ = true;
@@ -229,18 +230,21 @@ private:
     }
 
     void appendDaily() {
-        ui::busy("Appending to daily note");
-        auto r = cloud::vaultDailyAppend("- " + text_ + "\n");
+        cloud::Result r;
+        ui::await("Appending to daily note",
+                  [&] { r = cloud::vaultDailyAppend("- " + text_ + "\n"); });
         os::toast(r.ok ? "added to today's note" : r.error,
                   r.ok ? os::Tone::Good : os::Tone::Bad);
         os::invalidate();
     }
 
     void sendToAI() {
-        ui::busy(String("Asking ") + ai::spec(ai::preferred()).label);
-        auto r = ai::ask(text_,
-            "You are a pocket assistant on a 240x135 handheld. Plain text only, "
-            "no markdown, under 400 characters.", 300);
+        ai::Result r;
+        ui::await(String("Asking ") + ai::spec(ai::preferred()).label, [&] {
+            r = ai::ask(text_,
+                "You are a pocket assistant on a 240x135 handheld. Plain text only, "
+                "no markdown, under 400 characters.", 300);
+        });
         text_ = r.ok ? r.text : ("[" + r.error + "]");
         os::toast(r.ok ? String("via ") + r.usedLabel() : r.error,
                   r.ok ? os::Tone::Good : os::Tone::Bad);

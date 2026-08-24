@@ -110,8 +110,8 @@ private:
             os::invalidate();
             return;
         }
-        ui::busy("Transcribing");
-        auto r = ai::transcribe(audio::pcm(), n);
+        ai::Result r;
+        ui::await("Transcribing", [&] { r = ai::transcribe(audio::pcm(), n); });
         audio::freeBuffer();
         ui::acquireCanvas();
         if (!r.ok) { os::toast(r.error, os::Tone::Bad); os::invalidate(); return; }
@@ -122,13 +122,15 @@ private:
         String t = text;
         t.trim();
         if (!t.length()) return;
-        ui::busy(String("Translating to ") + langName());
-        auto r = ai::ask(
-            t,
-            String("Translate the user's text into ") + langName() +
-            ". Reply with the translation ONLY - no quotes, no notes, no romanisation "
-            "unless the target script is Latin, no markdown.",
-            400);
+        ai::Result r;
+        String lang = langName();
+        ui::await(String("Translating to ") + lang, [&] {
+            r = ai::ask(t,
+                String("Translate the user's text into ") + lang +
+                ". Reply with the translation ONLY - no quotes, no notes, no romanisation "
+                "unless the target script is Latin, no markdown.",
+                400);
+        });
         src_ = t;
         out_ = r.ok ? r.text : ("[" + r.error + "]");
         if (!r.ok) os::toast(r.error, os::Tone::Bad);

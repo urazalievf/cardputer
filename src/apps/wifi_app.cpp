@@ -99,8 +99,8 @@ public:
 
 private:
     void join(const String& s, const String& p) {
-        ui::busy("Joining " + ui::ellipsize(s, 16));
-        bool ok = net::connect(s, p);
+        bool ok = false;
+        ui::await("Joining " + ui::ellipsize(s, 16), [&] { ok = net::connect(s, p); });
         if (ok) {
             net::saveNetwork(s, p);
             net::syncTime();

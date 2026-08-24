@@ -52,11 +52,25 @@ bool allocBuffer() {
                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (s_buf) { s_cap = want; return true; }
     }
-    s_cap = plannedSamples();
-    if (s_cap < SAMPLE_RATE) { s_cap = 0; return false; }     // under a second is useless
-    s_buf = (int16_t*)malloc(s_cap * sizeof(int16_t));
-    if (!s_buf) { s_cap = 0; return false; }
-    return true;
+
+    // plannedSamples() is the advertised ceiling and counts memory the caller
+    // is *expected* to hand back (the UI canvas). Allocation has to work from
+    // what is actually free right now, and from the largest contiguous block
+    // rather than the total, or a fragmented heap fails a request that "fits".
+    size_t total = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    size_t budget = total > 72 * 1024 ? total - 72 * 1024 : 0;
+    size_t bytes = largest < budget ? largest : budget;
+    if (bytes > 200 * 1024) bytes = 200 * 1024;
+
+    // Back off rather than give up: a shorter memo beats no memo.
+    while (bytes >= SAMPLE_RATE * sizeof(int16_t)) {
+        s_buf = (int16_t*)malloc(bytes);
+        if (s_buf) { s_cap = bytes / sizeof(int16_t); return true; }
+        bytes = bytes / 4 * 3;
+    }
+    s_cap = 0;
+    return false;
 }
 
 void freeBuffer() {

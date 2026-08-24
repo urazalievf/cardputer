@@ -2,6 +2,7 @@
 #include "../kernel/ui.h"
 #include "../kernel/theme.h"
 #include "../kernel/store.h"
+#include "../kernel/expr.h"
 #include <math.h>
 
 // Calculator. A recursive-descent parser rather than a keypad, because this
@@ -59,143 +60,21 @@ public:
 private:
     struct Item { String expr; String value; };
 
-    // ---------- parser ----------
-    // grammar: expr := term (('+'|'-') term)*
-    //          term := power (('*'|'/'|'%') power)*
-    //          power:= unary ('^' power)?
-    //          unary:= ('-'|'+')? atom
-    //          atom := number | 'ans' | func '(' expr ')' | '(' expr ')'
-    const char* p_ = nullptr;
-    bool fail_ = false;
-
-    void skip() { while (*p_ == ' ') p_++; }
-
-    double parseExpr() {
-        double v = parseTerm();
-        while (!fail_) {
-            skip();
-            if (*p_ == '+')      { p_++; v += parseTerm(); }
-            else if (*p_ == '-') { p_++; v -= parseTerm(); }
-            else break;
-        }
-        return v;
-    }
-
-    double parseTerm() {
-        double v = parsePower();
-        while (!fail_) {
-            skip();
-            if (*p_ == '*')      { p_++; v *= parsePower(); }
-            else if (*p_ == '/') {
-                p_++;
-                double d = parsePower();
-                if (d == 0) { fail_ = true; err_ = "div by zero"; return 0; }
-                v /= d;
-            } else if (*p_ == '%') {
-                p_++;
-                double d = parsePower();
-                if (d == 0) { fail_ = true; err_ = "div by zero"; return 0; }
-                v = fmod(v, d);
-            } else break;
-        }
-        return v;
-    }
-
-    double parsePower() {
-        double base = parseUnary();
-        skip();
-        if (*p_ == '^') { p_++; return pow(base, parsePower()); }   // right-associative
-        return base;
-    }
-
-    double parseUnary() {
-        skip();
-        if (*p_ == '-') { p_++; return -parseUnary(); }
-        if (*p_ == '+') { p_++; return parseUnary(); }
-        return parseAtom();
-    }
-
-    bool word(const char* w) {
-        size_t n = strlen(w);
-        if (strncasecmp(p_, w, n) == 0) { p_ += n; return true; }
-        return false;
-    }
-
-    double parseAtom() {
-        skip();
-        if (*p_ == '(') {
-            p_++;
-            double v = parseExpr();
-            skip();
-            if (*p_ == ')') p_++;
-            else { fail_ = true; err_ = "missing )"; }
-            return v;
-        }
-        if (word("ans")) return ansValue_;
-        if (word("pi"))  return M_PI;
-        if (word("e"))   return M_E;
-
-        struct Fn { const char* name; double (*fn)(double); };
-        static const Fn fns[] = {
-            {"sqrt", sqrt}, {"abs", fabs}, {"ln", log}, {"log", log10},
-            {"sin", nullptr}, {"cos", nullptr}, {"tan", nullptr},
-            {"round", nullptr}, {"floor", floor}, {"ceil", ceil},
-        };
-        for (auto& f : fns) {
-            const char* save = p_;
-            if (!word(f.name)) continue;
-            skip();
-            if (*p_ != '(') { p_ = save; break; }
-            p_++;
-            double a = parseExpr();
-            skip();
-            if (*p_ == ')') p_++; else { fail_ = true; err_ = "missing )"; }
-            if (f.fn) return f.fn(a);
-            String n = f.name;
-            if (n == "round") return round(a);
-            double r = deg_ ? a * M_PI / 180.0 : a;
-            if (n == "sin") return sin(r);
-            if (n == "cos") return cos(r);
-            return tan(r);
-        }
-
-        char* end = nullptr;
-        double v = strtod(p_, &end);
-        if (end == p_) { fail_ = true; if (!err_.length()) err_ = "syntax"; return 0; }
-        p_ = end;
-        return v;
-    }
-
-    static String fmt(double v) {
-        if (isnan(v)) return "nan";
-        if (isinf(v)) return v > 0 ? "inf" : "-inf";
-        // Integers shouldn't grow a trailing ".00"; big numbers go exponential.
-        if (fabs(v) < 1e15 && v == floor(v)) { char b[24]; snprintf(b, sizeof(b), "%.0f", v); return b; }
-        char b[24];
-        if (fabs(v) >= 1e9 || (fabs(v) < 1e-4 && v != 0)) snprintf(b, sizeof(b), "%.6g", v);
-        else snprintf(b, sizeof(b), "%.6f", v);
-        String s = b;
-        if (s.indexOf('.') >= 0) {
-            while (s.endsWith("0")) s.remove(s.length() - 1);
-            if (s.endsWith(".")) s.remove(s.length() - 1);
-        }
-        return s;
-    }
-
+    // Parsing lives in kernel/expr so the self-test can exercise it directly.
     void evaluate() {
         String e = expr_;
         e.trim();
         if (!e.length()) return;
-        p_ = e.c_str();
-        fail_ = false;
+
+        expr::Options opt;
+        opt.degrees = deg_;
+        opt.ans = ansValue_;
+        double v = 0;
         err_ = "";
-        double v = parseExpr();
-        skip();
-        if (!fail_ && *p_ != '\0') { fail_ = true; err_ = "unexpected '" + String(*p_) + "'"; }
-        if (fail_) { last_ = ""; os::invalidate(); return; }
+        if (!expr::eval(e, v, err_, opt)) { last_ = ""; os::invalidate(); return; }
 
         ansValue_ = v;
-        last_ = fmt(v);
+        last_ = expr::format(v);
         hist_.insert(hist_.begin(), {e, last_});
         while (hist_.size() > 12) hist_.pop_back();
         histSel_ = -1;

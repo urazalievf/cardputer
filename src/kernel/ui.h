@@ -5,6 +5,7 @@
 #pragma once
 #include "os.h"
 #include "theme.h"
+#include <functional>
 
 namespace ui {
 
@@ -68,5 +69,11 @@ int  chooser(const String& title, const std::vector<String>& options, int initia
 String prompt(const String& title, const String& initial = "", size_t maxLen = 120);
 void  splash(const String& line1, const String& line2 = "");
 void  busy(const String& message);         // paints one frame; caller then blocks
+
+// Run `work` on the other core and animate until it finishes. A blocking HTTP
+// call on the UI core paints one frozen frame and looks exactly like a crash;
+// this keeps the spinner and the elapsed counter alive so you can tell the
+// difference. Falls back to running inline if the task cannot be created.
+void  await(const String& message, std::function<void()> work);
 
 }  // namespace ui
