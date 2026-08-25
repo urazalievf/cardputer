@@ -263,7 +263,17 @@ void statusBar(const String& title, Icon id, uint16_t accent) {
         const int bw = 20, bh = 9;
         rx -= bw + 2;                                  // shell plus the nub
         batteryGauge(rx, 1, bw, bh, batt.percent, batt.charging);
-        rx -= batt.charging ? 10 : 5;                  // room for the bolt
+        rx -= batt.charging ? 6 : 2;                   // clear the bolt
+        // The number as well as the bar. The gauge is the glanceable one, but
+        // "how much exactly" is a fair question and a bar cannot answer it.
+        // Six pixels per glyph, not textW(): the status bar forces text size 1
+        // regardless of the big-text setting.
+        String pct = String(batt.percent) + "%";
+        rx -= (int)pct.length() * 6;
+        g.setTextColor(batt.percent < 20 ? c().bad : c().dim);
+        g.setCursor(rx, 2);
+        g.print(pct.c_str());
+        rx -= 4;
     }
     if (bt::active()) { rx -= 10; icon(rx, 1, Icon::Bluetooth,
                                       bt::connected() ? c().accent2 : c().dim); }

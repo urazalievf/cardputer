@@ -9,6 +9,7 @@
 #include "bt.h"
 #include "console.h"
 #include "hw.h"
+#include "usbdisk.h"
 #include <stdarg.h>
 #include <esp_heap_caps.h>
 
@@ -63,6 +64,10 @@ void bootReport() {
         logf("sd       NOT MOUNTED - probing to find out why:");
         store::diagnose();
     }
+    logf("usbdisk  %s", usbdisk::available()
+             ? (String(usbdisk::attached() ? "attached, " : "ready, ") +
+                String((unsigned long long)usbdisk::sizeMB()) + " MB").c_str()
+             : "unavailable");
     logf("battery  %d%% (raw %d)%s", hw::battery().percent, hw::battery().raw,
          hw::battery().charging ? ", charging" : "");
     logf("wifi     %d saved network(s)", (int)net::savedNetworks().size());

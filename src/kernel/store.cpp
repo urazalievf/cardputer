@@ -8,6 +8,13 @@
 #include <ArduinoJson.h>
 #include <algorithm>
 
+// Declared here rather than included: the Arduino core exports it from
+// sd_diskio.cpp but does not put it in sd_diskio.h. DSTATUS is a BYTE, so this
+// signature -- and therefore the mangled name -- matches. It has to sit at
+// global scope; inside namespace store it mangles as store::ff_sd_initialize
+// and links against nothing.
+extern uint8_t ff_sd_initialize(uint8_t pdrv);
+
 namespace store {
 
 // Cardputer SD slot (shared SPI bus).
@@ -72,6 +79,19 @@ void factoryReset() {
 }
 
 // ---------------- SD ----------------
+bool sdRawInit(uint8_t pdrv) {
+    if (pdrv == 0xFF) return false;
+    // STA_NOINIT, from the FATFS diskio layer. Still set means the card never
+    // answered CMD0/ACMD41 and there is nothing to read.
+    const uint8_t STA_NOINIT_BIT = 0x01;
+    uint8_t st = ff_sd_initialize(pdrv);
+    if (st & STA_NOINIT_BIT) {
+        os::logf("sd raw: card did not initialise (status 0x%02X)", st);
+        return false;
+    }
+    return true;
+}
+
 bool sdReady() { return s_cardPresent; }
 bool sdMounted() { return s_mounted; }
 
@@ -239,8 +259,12 @@ void diagnose() {
     os::logf("sd probe: sdcard_init -> %s", pdrv == 0xFF ? "FAILED (card not responding)"
                                                          : "slot allocated");
     if (pdrv != 0xFF) {
+        // Without this the card is still in idle and everything below reports a
+        // dead card on a perfectly good one.
+        bool init = sdRawInit(pdrv);
+        os::logf("sd probe: raw init -> %s", init ? "OK" : "FAILED");
         uint8_t buf[512];
-        bool r0 = sd_read_raw(pdrv, buf, 0);
+        bool r0 = init && sd_read_raw(pdrv, buf, 0);
         os::logf("sd probe: sector 0 read %s", r0 ? "OK" : "FAILED");
         if (r0) {
             // A FAT/MBR boot sector ends in 0x55AA. Anything else means the

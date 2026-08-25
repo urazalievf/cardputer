@@ -231,19 +231,48 @@ static void testTheme() {
 
     group("sd hardware");
     {
+        // This probe used to run with the card still mounted, so sdcard_init()
+        // handed back a SECOND slot on the same physical card and the two
+        // fought: sector 0 would not read and the sector count came back
+        // different on every run. That looked like a failing card for months.
+        // It is also the exact path USB mass storage serves the host from, so
+        // getting it right matters beyond the test.
+        store::sdRelease();
+        audio::releaseI2S();
         SPI.begin(40, 39, 14, 12);
         uint8_t pdrv = sdcard_init(12, &SPI, 20000000);
         if (pdrv == 0xFF) {
-            os::logf("   note  sdcard_init: no drive slot");
+            check(false, "sdcard_init: no drive slot");
         } else {
+            check(pdrv == 0, String("raw driver takes slot 0, got ") + pdrv);
+            // The step mass storage was missing: a driver slot is not a live
+            // card, and nothing addresses it until ff_sd_initialize() runs.
+            check(store::sdRawInit(pdrv), "raw block device initialises");
             uint8_t buf[512];
             bool readOk = sd_read_raw(pdrv, buf, 0);
-            os::logf("   note  sdcard_init slot %u, sector 0 read %s, claims %u sectors",
-                     pdrv, readOk ? "OK" : "FAILED", (unsigned)sdcard_num_sectors(pdrv));
+            check(readOk, "sector 0 reads over the raw driver");
+
+            uint32_t sectors = sdcard_num_sectors(pdrv);
+            uint32_t ssize = sdcard_sector_size(pdrv);
+            os::logf("   note  raw geometry: %u sectors of %u bytes (%llu MB)",
+                     (unsigned)sectors, (unsigned)ssize,
+                     (unsigned long long)((uint64_t)sectors * ssize / 1048576ULL));
+            check(ssize == 512, String("sector size is 512, got ") + ssize);
+            // A card that reports a size no SD card has is a driver talking to
+            // nothing; mass storage would hand the host that same lie.
+            check(sectors > 0 && (uint64_t)sectors * ssize < 2048ULL * 1024 * 1024 * 1024,
+                  "sector count is a size a card could actually be");
+            if (readOk) {
+                os::logf("   note  boot signature %02X%02X, first bytes %02X %02X %02X %02X",
+                         buf[510], buf[511], buf[0], buf[1], buf[2], buf[3]);
+                check(buf[510] == 0x55 && buf[511] == 0xAA,
+                      "sector 0 carries an MBR/VBR signature");
+            }
             sdcard_uninit(pdrv);
         }
         SPI.end();
-        check(true, "low-level probe completed without faulting");
+        // Put the filesystem back for whatever runs after this.
+        check(store::sdMount(true), "card remounts after the raw probe");
     }
 
     group("theme");

@@ -42,6 +42,14 @@ static const char* K_VAULT       = "vault";      // Obsidian subfolder for devic
 static const char* K_TZ          = "tz";         // POSIX TZ string for NTP
 
 // --- SD card ---
+// Bring the raw block device out of idle. sdcard_init() only allocates a driver
+// slot and configures SPI -- the card itself is never addressed until FATFS
+// calls ff_sd_initialize() from inside sdcard_mount(). Until that happens
+// sdcard_num_sectors() reads back zero and every sd_read_raw() fails, which is
+// exactly why USB mass storage registered a zero-sized volume and no disk ever
+// appeared on the host. Anything serving raw sectors has to do this itself.
+bool sdRawInit(uint8_t pdrv);
+
 bool sdReady();          // a working card was seen, whether or not it's mounted now
 bool sdMounted();        // ...and it is mounted right now
 bool sdMount(bool force = false);     // safe to call repeatedly

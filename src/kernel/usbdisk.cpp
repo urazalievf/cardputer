@@ -13,8 +13,8 @@ namespace usbdisk {
 
 #if ARDUINO_USB_MODE == 0
 
-// Cardputer SD slot. GPIO40 is shared with the I2S bit clock, so audio has to
-// be evicted before the card can be driven — see docs/hardware.md.
+// Cardputer SD slot (SCK 40, MISO 39, MOSI 14, CS 12). Shares no pin with the
+// audio path — see docs/hardware.md.
 static const int SD_SCK = 40, SD_MISO = 39, SD_MOSI = 14, SD_CS = 12;
 
 static USBMSC   s_msc;
@@ -68,6 +68,16 @@ void begin() {
         SPI.end();
         return;
     }
+    // sdcard_init() allocates a driver slot; it does not address the card. Until
+    // something runs ff_sd_initialize() the card is still in idle, the geometry
+    // reads back as zero sectors, and every raw read fails -- so this registered
+    // a zero-sized volume and the host, quite reasonably, showed nothing.
+    if (!store::sdRawInit(pdrv)) {
+        os::logf("usbdisk: card would not initialise - USB drive unavailable");
+        sdcard_uninit(pdrv);
+        SPI.end();
+        return;
+    }
     s_sectors = sdcard_num_sectors(pdrv);
     s_sectorSize = sdcard_sector_size(pdrv);
     sdcard_uninit(pdrv);
@@ -101,6 +111,14 @@ bool attach() {
     s_pdrv = sdcard_init(SD_CS, &SPI, 20000000);
     if (s_pdrv == 0xFF) {
         os::logf("usbdisk: could not claim the card");
+        SPI.end();
+        return false;
+    }
+    // Same again: a slot is not a live card, and MSC serves raw sectors.
+    if (!store::sdRawInit(s_pdrv)) {
+        os::logf("usbdisk: card would not initialise on attach");
+        sdcard_uninit(s_pdrv);
+        s_pdrv = 0xFF;
         SPI.end();
         return false;
     }
