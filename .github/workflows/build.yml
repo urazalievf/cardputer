@@ -2,9 +2,9 @@ name: build
 
 on:
   push:
-    branches: [main, uat]
+    branches: [prod, uat]
   pull_request:
-    branches: [main, uat]
+    branches: [prod, uat]
 
 jobs:
   firmware:
