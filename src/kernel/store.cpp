@@ -17,6 +17,7 @@ static bool s_mounted = false;      // currently holding GPIO40 with SD mounted
 static bool s_cardPresent = false;  // a card mounted successfully at least once
 static uint64_t s_sizeMB = 0, s_usedMB = 0;
 static uint32_t s_lastFail = 0;
+static bool s_usbOwned = false;
 
 void begin() {
     prefs.begin("cfg", false);
@@ -74,7 +75,15 @@ void sdRelease() {
     s_mounted = false;
 }
 
+void setUsbOwned(bool owned) {
+    s_usbOwned = owned;
+    if (owned) sdRelease();
+    else s_lastFail = 0;            // let the next access retry immediately
+}
+bool usbOwned() { return s_usbOwned; }
+
 bool sdAcquire(bool force) {
+    if (s_usbOwned) return false;   // the Mac has it
     if (s_mounted) return true;
     // A failed mount costs two SD.begin attempts, ~200ms. Without a backoff
     // every listNotes() on a card-less device pays that, which reads as lag.

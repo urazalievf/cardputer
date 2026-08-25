@@ -10,6 +10,18 @@
 #include <stdarg.h>
 #include <esp_heap_caps.h>
 
+// In the USB-drive build the core does not start USB for us (that is the whole
+// point: MSC has to be registered before enumeration), so the console is our
+// own CDC instance rather than the core's Serial.
+#ifdef USB_DRIVE_BUILD
+#include <USB.h>
+#include <USBCDC.h>
+USBCDC UsbConsole(0);
+#define CONSOLE UsbConsole
+#else
+#define CONSOLE Serial
+#endif
+
 namespace os {
 
 static std::vector<App*> s_apps;
@@ -26,7 +38,7 @@ void logf(const char* fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    Serial.printf("[%7lu] %s\n", (unsigned long)millis(), buf);
+    CONSOLE.printf("[%7lu] %s\n", (unsigned long)millis(), buf);
 }
 
 void bootReport() {
@@ -69,9 +81,11 @@ void begin() {
     cloud::begin();
     ai::begin();
 
+#ifndef USB_DRIVE_BUILD
     Serial.begin(115200);
+#endif
     uint32_t t0 = millis();
-    while (!Serial && millis() - t0 < 900) delay(10);
+    while (!CONSOLE && millis() - t0 < 900) delay(10);
     bootReport();
     s_dirty = true;
 }
@@ -196,8 +210,8 @@ void run() {
     bt::tick();
 
     static bool reported = false;
-    if (Serial && !reported)      { reported = true;  bootReport(); }
-    else if (!Serial && reported) { reported = false; }
+    if (CONSOLE && !reported)      { reported = true;  bootReport(); }
+    else if (!CONSOLE && reported) { reported = false; }
 
     static bool hadToast = false;
     if (hadToast && !toastActive()) { hadToast = false; s_dirty = true; }

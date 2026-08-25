@@ -8,6 +8,7 @@
 #include "../kernel/audio.h"
 #include "../kernel/bt.h"
 #include "../kernel/hw.h"
+#include "../kernel/usbdisk.h"
 #include <esp_heap_caps.h>
 
 // Everything the OS can be told. Entries are declared as data so adding a
@@ -121,6 +122,7 @@ private:
             {STR,    "Bluetooth name","btname",  0,0,1, "CardputerOS"},
             {ACTION, "Forget WiFi", "a_wipewifi"},
             {ACTION, "Scan Grove port","a_i2c"},
+            {ACTION, "USB drive",   "a_usb"},
 
             {HEADER, "Assistant", ""},
             {ROUTE,  "Ask who?",    "route"},
@@ -161,6 +163,7 @@ private:
             {INFO,   "Canvas",      "i_canvas"},
             {INFO,   "Mic buffer",  "i_mic"},
             {INFO,   "SD card",     "i_sd"},
+            {INFO,   "USB drive",   "i_usb"},
             {INFO,   "Bluetooth",   "i_bt"},
             {INFO,   "Daemon",      "i_host"},
         };
@@ -237,6 +240,10 @@ private:
         if (key == "i_mic")    return audio::micReady()
                                       ? String((unsigned)audio::capacitySeconds()) + "s max"
                                       : String("unavailable");
+        if (key == "i_usb")    return usbdisk::available()
+                                      ? (usbdisk::attached() ? String("host has it")
+                                                             : String((int)usbdisk::sizeMB()) + "MB ready")
+                                      : String("no card at boot");
         if (key == "i_sd")     return store::sdReady()
                                       ? String((int)store::sdUsedMB()) + "/" +
                                         String((int)store::sdTotalMB()) + "MB"
@@ -600,6 +607,16 @@ private:
                     rows.push_back(String(b) + "  " + d.guess);
                 }
                 ui::chooser(String((int)found.size()) + " device(s)", rows, 0);
+            }
+        } else if (key == "a_usb") {
+            if (!usbdisk::available()) {
+                os::toast("no card was present at boot", os::Tone::Bad);
+            } else if (usbdisk::attached()) {
+                usbdisk::detach();
+                os::toast("card handed back to the device", os::Tone::Good);
+            } else {
+                os::launchByName("Files");    // the mode lives there, with the counters
+                os::toast("press U in Files to hand the card over");
             }
         } else if (key == "a_led") {
             hw::ledPulse(255, 0, 0, 200);

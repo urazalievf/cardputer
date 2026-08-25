@@ -17,6 +17,11 @@ void   setInt(const char* key, int value);
 void   remove(const char* key);
 void   factoryReset();          // wipes cfg, wifi, chat; leaves SD notes alone
 
+// While the host has the card over USB, nothing here may touch it: two owners
+// of one filesystem is corruption.
+void   setUsbOwned(bool owned);
+bool   usbOwned();
+
 // Well-known config keys.
 static const char* K_HOST        = "host";       // companion daemon, e.g. "mac.local"
 static const char* K_HOST_PORT   = "hostport";

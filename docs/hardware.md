@@ -86,5 +86,28 @@ WS2812, driven by the core's own `rgbLedWrite()` — no library needed. It is
 worth using: it is the only output visible when the screen is face-down, which
 is exactly the situation while recording a voice memo.
 
+**USB mass storage does not work yet.** The goal was to mount the SD card in
+Finder over the same cable that powers the device. `kernel/usbdisk.cpp` is
+written and compiles, and `env:cardputer-usbdrive` builds it, but no volume ever
+appears. What is established:
+
+- Mass storage requires TinyUSB (`ARDUINO_USB_MODE=0`). The hardware CDC/JTAG
+  bridge cannot present an MSC interface at all.
+- With `ARDUINO_USB_CDC_ON_BOOT=1`, the core calls `USB.begin()` from `main()`
+  *before* `setup()` runs (`cores/esp32/main.cpp:109`), which freezes the
+  descriptor. Registering MSC in `setup()` is silently too late.
+  `ARDUINO_USB_ON_BOOT` is a plain `#define` in `USB.h`, not `#ifndef`-guarded,
+  so it cannot be overridden from `build_flags`.
+- Working around that with `ARDUINO_USB_CDC_ON_BOOT=0` plus an explicit
+  `USB.begin()` after registering MSC does produce a composite device
+  (`bDeviceClass 239`, "M5Stack StampS3"), but still no volume — and that
+  build's CDC console is silent, so there is nothing to debug from.
+- In TinyUSB mode esptool cannot reset the board: uploads fail with "No serial
+  data received". A 1200-baud touch reliably drops it back to the ROM
+  bootloader; `tools/usb_touch.py` automates this as a pre-upload action.
+
+Until this is solved, the Share app serves the card over HTTP instead, which
+needs no USB gymnastics and works on any device with a browser.
+
 **Flashing.** Usually just works over USB CDC. If the port doesn't appear, hold
 the G0 button on the StampS3 while plugging in to force download mode.

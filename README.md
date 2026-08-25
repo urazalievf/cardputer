@@ -41,7 +41,7 @@ a pocket.
 | **Timer** | Stopwatch, countdown and pomodoro, with an audible finish. |
 | **Weather** | Current conditions and three days, over plain HTTP with no API key. Finds you by IP, or name a city. |
 | **Remote** | Universal IR remote — Samsung, LG/NEC and Sony code sets, or type a raw address/command. |
-| **Share** | Serves the SD card over HTTP so a phone can pull notes off it. Hosts its own hotspot when there's no network to join. |
+| **Share** | Serves the SD card over HTTP so a phone or laptop can pull notes off it. Hosts its own hotspot when there's no network to join. This is how you get files off the device — USB mass storage is [not working yet](docs/hardware.md). |
 | **Files** | SD browser: create folders and files, edit text in place, rename, sort, and move things with cut/paste. |
 | **Settings** | Themes, every colour, brightness, every provider and key, connectivity, vault, timezone, diagnostics. |
 

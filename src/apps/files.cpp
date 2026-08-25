@@ -2,18 +2,20 @@
 #include "../kernel/ui.h"
 #include "../kernel/theme.h"
 #include "../kernel/store.h"
+#include "../kernel/usbdisk.h"
 #include <algorithm>
 
 // SD browser: make folders, make files, edit them, and move things between
 // folders with cut and paste. Everything here needs a FAT32 card.
 class Files : public App {
-    enum Mode : uint8_t { BROWSE, VIEW, EDIT };
+    enum Mode : uint8_t { BROWSE, VIEW, EDIT, USBDRIVE };
 public:
     const char* name() const override { return "Files"; }
     const char* blurb() const override { return "sd card"; }
     ui::Icon icon() const override { return ui::Icon::Folder; }
 
     String title() const override {
+        if (mode_ == USBDRIVE) return usbdisk::attached() ? "USB drive - on" : "USB drive";
         if (mode_ == EDIT) return "Edit " + ui::ellipsize(viewName_, 18);
         if (mode_ == VIEW) return ui::ellipsize(viewName_, 24);
         if (!store::sdReady()) return "Files  no card";
@@ -23,6 +25,13 @@ public:
     }
 
     bool onBack() override {
+        if (mode_ == USBDRIVE) {
+            usbdisk::detach();
+            mode_ = BROWSE;
+            refresh();
+            os::toast("card handed back to the device");
+            return true;
+        }
         if (mode_ == EDIT) { saveEdit(); return true; }
         if (mode_ == VIEW) { mode_ = BROWSE; return true; }
         if (path_ != "/")  { up(); return true; }
@@ -37,6 +46,8 @@ public:
 
     void onKey(const KeyEvent& k) override {
         switch (mode_) {
+            case USBDRIVE:
+                return;                       // the host owns the card; nothing to do here
             case EDIT:
                 if (ui::editBuffer(content_, k, MAXEDIT, true)) os::invalidate();
                 return;
@@ -51,6 +62,7 @@ public:
     }
 
     void draw() override {
+        if (mode_ == USBDRIVE) return drawUsb();
         if (!store::sdReady()) {
             ui::centered(44, "No SD card mounted", ui::c().bad);
             ui::centered(58, "insert one and press M", ui::c().dim);
@@ -82,11 +94,48 @@ public:
         if (clip_.length())
             ui::hint("V paste here   X cancel   F folder   N file");
         else
-            ui::hint(String("F folder N file R name X cut O ") + sortName());
+            ui::hint(String("F folder N file R name X cut U usb O ") + sortName());
+    }
+
+    void tick() override {
+        if (mode_ != USBDRIVE) return;
+        // Counters only move while the host is reading or writing.
+        if (millis() - painted_ > 400) { painted_ = millis(); os::invalidate(); }
     }
 
 private:
     static const size_t MAXEDIT = 4000;
+
+    void toggleUsb() {
+        if (!usbdisk::available()) {
+            os::toast("no card was present at boot - power cycle with it in",
+                      os::Tone::Bad);
+            return;
+        }
+        if (!usbdisk::attach()) { os::toast("could not hand over the card", os::Tone::Bad); return; }
+        mode_ = USBDRIVE;
+        entries_.clear();
+        os::toast("card is now your Mac's", os::Tone::Good);
+        os::invalidate();
+    }
+
+    void drawUsb() {
+        ui::panel(4, BODY_Y + 2, SCREEN_W - 8, 62, ui::c().surface, 5);
+        ui::outline(4, BODY_Y + 2, SCREEN_W - 8, 62, ui::c().good, 5);
+
+        ui::icon(12, BODY_Y + 10, ui::Icon::Chip, ui::c().good);
+        ui::text(28, BODY_Y + 10, "Mounted on your Mac", ui::c().good);
+        ui::text(12, BODY_Y + 26, String("CardputerOS SD  ") + String((int)usbdisk::sizeMB()) +
+                                  " MB", ui::c().fg);
+        ui::text(12, BODY_Y + 38, String("read ") + usbdisk::readCount() +
+                                  "   written " + usbdisk::writeCount(), ui::c().dim);
+        ui::text(12, BODY_Y + 50, usbdisk::attached() ? "host has the card"
+                                                      : "host ejected it", ui::c().dim);
+
+        ui::text(6, BODY_Y + 72, "Eject it in Finder first, then", ui::c().dim);
+        ui::text(6, BODY_Y + 83, "press ` to take the card back.", ui::c().dim);
+        ui::hint("` reclaim the card");
+    }
 
     static String join(const String& dir, const String& n) {
         return dir.endsWith("/") ? dir + n : dir + "/" + n;
@@ -113,6 +162,7 @@ private:
         if (k.is('f')) { newFolder(); return; }
         if (k.is('n')) { newFile(); return; }
         if (k.is('v')) { paste(); return; }
+        if (k.is('u')) { toggleUsb(); return; }
         if (k.is('o')) {
             sort_ = (sort_ + 1) % 4;
             store::setInt("filesort", sort_);
@@ -311,6 +361,7 @@ private:
     String path_ = "/", content_, viewName_, viewPath_, clip_, clipName_;
     std::vector<store::Entry> entries_;
     int sel_ = 0, scroll_ = 0, vscroll_ = 0, sort_ = 0;
+    uint32_t painted_ = 0;
     bool editable_ = false;
 };
 
