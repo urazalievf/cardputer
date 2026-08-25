@@ -10,6 +10,7 @@ static size_t   s_cap = 0;        // samples
 static size_t   s_used = 0;
 static bool     s_micReady = false;
 static bool     s_recording = false;
+static size_t   s_submitted = 0;   // samples handed to the driver
 static float    s_level = 0.0f;
 static bool     s_micOwnsI2S = false;
 
@@ -205,6 +206,17 @@ void waveClear() {
     for (int i = 0; i < WAVE_POINTS; i++) s_wave[i] = 0.0f;
 }
 
+// Hand the driver everything it will take, up to its two-slot queue. Never
+// blocks: Mic.record() only waits when both slots are busy, and this checks.
+static bool topUp() {
+    if (!s_buf) return false;
+    while (M5Cardputer.Mic.isRecording() < 2 && s_submitted + chunkSamples() <= s_cap) {
+        if (!M5Cardputer.Mic.record(s_buf + s_submitted, chunkSamples(), s_rate)) return false;
+        s_submitted += chunkSamples();
+    }
+    return true;
+}
+
 bool recordStart() {
     waveClear();
     s_startErr = "";
@@ -224,6 +236,7 @@ bool recordStart() {
         return false;
     }
     s_used = 0;
+    s_submitted = 0;
     s_level = 0.0f;
     // Not s_micReady: that is a cached verdict. This has to be true right now.
     s_recording = M5Cardputer.Mic.isRunning();
@@ -232,27 +245,54 @@ bool recordStart() {
         freeBuffer();
         return false;
     }
+    // Prime both slots before returning, so the very first chunk is already
+    // being filled while the app paints its first frame.
+    if (!topUp()) {
+        s_startErr = "microphone refused the first buffer";
+        s_recording = false;
+        freeBuffer();
+        return false;
+    }
     return true;
+}
+
+// Samples the driver has actually finished writing. Requests complete in the
+// order they were queued and are all the same size, so the outstanding count is
+// enough to work it out.
+static size_t completedSamples() {
+    size_t pending = (size_t)M5Cardputer.Mic.isRecording();
+    size_t outstanding = pending * chunkSamples();
+    return s_submitted > outstanding ? s_submitted - outstanding : 0;
 }
 
 bool recordChunk() {
     if (!s_recording || !s_buf) return false;
-    size_t room = s_cap - s_used;
-    if (room < chunkSamples()) { s_recording = false; s_stop = Stop::Full; return false; }
 
-    // record() only returns false when its lazy begin() fails, i.e. the I2S
-    // port went away underneath us. Say so rather than letting the caller
-    // report an empty recording as "too short".
-    if (!M5Cardputer.Mic.record(s_buf + s_used, chunkSamples(), s_rate)) {
+    // Keep two requests outstanding at all times. mic_task blocks on
+    // ulTaskNotifyTake(portMAX_DELAY) the moment both slots are empty, and every
+    // sample arriving at the I2S port while it is blocked is discarded -- so the
+    // 20-60ms this function's caller spends drawing a waveform used to be a hole
+    // punched straight through the recording, once every 100ms. Four seconds of
+    // samples stitched out of six seconds of speech is not speech any more, and
+    // Whisper answers noise with its stock hallucination.
+    if (!topUp()) {
         os::logf("audio: Mic.record() failed at %.1fs", (double)s_used / s_rate);
         s_recording = false;
         s_stop = Stop::MicFailed;
         return false;
     }
-    // The mic task fills the slot asynchronously; bail out rather than spin
-    // forever if it never does.
+
+    // Nothing left to submit and nothing left in flight: the buffer is full.
+    if (s_used >= s_submitted && M5Cardputer.Mic.isRecording() == 0) {
+        s_recording = false;
+        s_stop = Stop::Full;
+        return false;
+    }
+
+    // Wait for the oldest outstanding request to land -- while the other one
+    // keeps filling.
     uint32_t deadline = millis() + 500;
-    while (M5Cardputer.Mic.isRecording()) {
+    while (completedSamples() < s_used + chunkSamples()) {
         if (millis() > deadline) {
             os::logf("audio: mic task stalled at %.1fs", (double)s_used / s_rate);
             s_recording = false;
@@ -260,6 +300,7 @@ bool recordChunk() {
             return false;
         }
         delay(2);
+        topUp();
     }
 
     // Envelope in SUBS slices so the waveform scrolls smoothly, plus the
@@ -290,6 +331,8 @@ bool recordChunk() {
     }
 
     s_used += chunkSamples();
+    // Refill before returning: the caller's next stop is a full repaint.
+    topUp();
     return true;
 }
 
@@ -307,7 +350,18 @@ bool sampleOnce(int16_t* buf, size_t samples) {
     return true;
 }
 
-void recordStop() { if (s_recording) s_stop = Stop::Stopped; s_recording = false; }
+void recordStop() {
+    if (s_recording) s_stop = Stop::Stopped;
+    s_recording = false;
+    // Two requests are usually still in flight. Let them land and count them,
+    // rather than throwing away the last 200ms of every recording -- which is
+    // often the end of the last word.
+    uint32_t deadline = millis() + 400;
+    while (M5Cardputer.Mic.isRecording() && millis() < deadline) delay(2);
+    size_t done = completedSamples();
+    if (done > s_cap) done = s_cap;
+    if (done > s_used) s_used = done;
+}
 bool recording() { return s_recording; }
 size_t recordedSamples() { return s_used; }
 float recordedSeconds() { return (float)s_used / s_rate; }
