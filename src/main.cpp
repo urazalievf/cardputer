@@ -5,6 +5,7 @@
 #include "kernel/os.h"
 #include "kernel/hw.h"
 #include "kernel/usbdisk.h"
+#include "kernel/store.h"
 #ifdef USB_DRIVE_BUILD
 #include <USB.h>
 #include <USBCDC.h>
@@ -62,6 +63,19 @@ void setup() {
     if (usbdisk::available() && usbdisk::attach()) {
         os::logf("usbdisk: auto-attached at boot");
         os::launchByName("Files");
+    }
+#endif
+
+#ifdef FORMAT_ON_BOOT
+    {
+        // Diagnostic build: format the card at boot and report every step.
+        for (uint32_t t = millis(); !Serial && millis() - t < 4000;) delay(50);
+        os::logf("=== FORMAT ON BOOT ===");
+        String err;
+        bool ok = store::formatSd(err);
+        os::logf("=== FORMAT %s%s%s ===", ok ? "SUCCEEDED" : "FAILED",
+                 ok ? "" : ": ", ok ? "" : err.c_str());
+        if (ok) os::logf("card is now %llu MB", store::sdTotalMB());
     }
 #endif
 

@@ -444,7 +444,10 @@ private:
         String err;
         bool ok = false;
         // A large card takes tens of seconds; await keeps the UI honest.
-        ui::await("Formatting - do not unplug", [&] { ok = store::formatSd(err); });
+        // A big card is slow: the FAT tables have to be zeroed and the library
+        // gives mkfs only a 4KB work buffer. A 256GB card takes about a minute,
+        // and it looks identical to a hang unless the screen says otherwise.
+        ui::await("Formatting - can take minutes", [&] { ok = store::formatSd(err); });
         os::toast(ok ? "formatted - " + String((int)store::sdTotalMB()) + "MB ready" : err,
                   ok ? os::Tone::Good : os::Tone::Bad);
         os::invalidate();

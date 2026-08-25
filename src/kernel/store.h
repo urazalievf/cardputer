@@ -27,6 +27,10 @@ bool   usbOwned();
 // reason in `err`.
 bool   formatSd(String& err);
 
+// Verbose step-by-step probe written to the serial log. store::begin() runs
+// before the console exists, so a mount failure at boot is otherwise silent.
+void   diagnose();
+
 // Well-known config keys.
 static const char* K_HOST        = "host";       // companion daemon, e.g. "mac.local"
 static const char* K_HOST_PORT   = "hostport";

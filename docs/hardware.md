@@ -40,6 +40,21 @@ while the mic has the pin.
 ~60 ms for the driver to release. Every beep during recording costs that round
 trip.
 
+**Formatting a large card takes a long time, and looks like a hang.** The
+Arduino SD library gives `f_mkfs` a work buffer of `FF_MAX_SS` -- 4KB with this
+sdkconfig -- so zeroing the FAT tables on a 256GB card takes tens of seconds
+with no progress reporting. Settings > Format SD card runs it behind
+`ui::await()` so the elapsed counter keeps moving; without that it is
+indistinguishable from a crash, and the natural reaction is to pull the plug
+half way through.
+
+**Mounting the card costs ~29KB of heap** in driver, FATFS and VFS structures.
+That matters because it comes straight off the maximum recording length. Since
+claiming the microphone unmounts the card anyway (shared GPIO40),
+`audio::recordStart()` releases it *before* allocating the capture buffer, and
+`store` tells `audio` how much a mounted card is holding so the advertised
+capacity reflects what recording will actually get.
+
 **The card must be FAT32.** The Arduino SD library mounts FAT16/FAT32 only.
 Cards 64GB and larger ship exFAT from the factory and fail with
 `f_mount failed: (13) There is no valid FAT volume` — which looks identical to

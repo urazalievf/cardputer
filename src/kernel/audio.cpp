@@ -15,10 +15,12 @@ static bool     s_micOwnsI2S = false;
 
 static uint32_t s_rate = 16000;
 static size_t   s_headroom = 72 * 1024;
+static size_t   s_sdReclaim = 0;
 
 uint32_t sampleRate() { return s_rate; }
 void setSampleRate(uint32_t hz) { s_rate = (hz == 8000 || hz == 16000) ? hz : 16000; }
 void setHeadroomBytes(size_t bytes) { s_headroom = bytes; }
+void setSdReclaimable(size_t bytes) { s_sdReclaim = bytes; }
 
 // 100ms of audio, whatever the rate.
 static size_t chunkSamples() { return s_rate / 10; }
@@ -46,7 +48,7 @@ static size_t plannedSamples() {
     if (psram >= want * sizeof(int16_t)) return want;
     // Leave enough for a TLS handshake (~45KB) plus slack; the caller releases
     // the canvas first, so count that back in.
-    size_t avail = heap_caps_get_free_size(MALLOC_CAP_INTERNAL) + s_reclaimable;
+    size_t avail = heap_caps_get_free_size(MALLOC_CAP_INTERNAL) + s_reclaimable + s_sdReclaim;
     size_t bytes = avail > s_headroom ? avail - s_headroom : 0;
     if (bytes > 200 * 1024) bytes = 200 * 1024;
     return bytes / sizeof(int16_t);
@@ -157,8 +159,10 @@ void waveClear() {
 
 void recordStart() {
     waveClear();
-    if (!allocBuffer()) { s_recording = false; return; }
+    // micOn() evicts the SD card, which hands ~28KB of driver and FATFS
+    // buffers back. Allocating before that throws away a second of recording.
     micOn();
+    if (!allocBuffer()) { s_recording = false; return; }
     s_used = 0;
     s_level = 0.0f;
     s_recording = s_micReady;

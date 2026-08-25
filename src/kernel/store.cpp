@@ -69,11 +69,15 @@ void factoryReset() {
 // ---------------- SD ----------------
 bool sdReady() { return s_cardPresent; }
 
+// Measured: mounting costs ~29KB of driver, FATFS and VFS structures.
+static const size_t SD_DRIVER_BYTES = 28 * 1024;
+
 void sdRelease() {
     if (!s_mounted) return;
     SD.end();
     SPI.end();
     s_mounted = false;
+    audio::setSdReclaimable(0);
 }
 
 void setUsbOwned(bool owned) {
@@ -108,6 +112,7 @@ bool sdAcquire(bool force) {
         s_lastFail = 0;
         s_sizeMB = SD.totalBytes() / (1024ULL * 1024ULL);
         s_usedMB = SD.usedBytes() / (1024ULL * 1024ULL);
+        audio::setSdReclaimable(SD_DRIVER_BYTES);
     } else {
         s_lastFail = millis() ? millis() : 1;
         // The card can enumerate fine and still fail here: the Arduino SD
@@ -190,6 +195,51 @@ bool isDir(const String& path) {
     return d;
 }
 
+void diagnose() {
+    os::logf("sd probe: usbOwned=%d mounted=%d cardSeen=%d", (int)s_usbOwned,
+             (int)s_mounted, (int)s_cardPresent);
+    if (s_usbOwned) return;
+
+    sdRelease();
+    audio::releaseI2S();
+    SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+
+    // Step 1: does the card answer at the SPI/SD protocol level at all?
+    uint8_t pdrv = sdcard_init(SD_CS, &SPI, 20000000);
+    os::logf("sd probe: sdcard_init -> %s", pdrv == 0xFF ? "FAILED (card not responding)"
+                                                         : "slot allocated");
+    if (pdrv != 0xFF) {
+        uint8_t buf[512];
+        bool r0 = sd_read_raw(pdrv, buf, 0);
+        os::logf("sd probe: sector 0 read %s", r0 ? "OK" : "FAILED");
+        if (r0) {
+            // A FAT/MBR boot sector ends in 0x55AA. Anything else means the
+            // card is readable but carries no filesystem this driver knows.
+            os::logf("sd probe: boot signature %02X%02X, first bytes %02X %02X %02X %02X",
+                     buf[510], buf[511], buf[0], buf[1], buf[2], buf[3]);
+            os::logf("sd probe: type %d, %u sectors of %u bytes", (int)sdcard_type(pdrv),
+                     (unsigned)sdcard_num_sectors(pdrv), (unsigned)sdcard_sector_size(pdrv));
+        }
+        sdcard_uninit(pdrv);
+    }
+
+    // Step 2: the mount the OS actually uses. Its own error prints above this.
+    bool mounted = SD.begin(SD_CS, SPI, 20000000, "/sd", 5, false);
+    os::logf("sd probe: SD.begin -> %s", mounted ? "mounted" : "failed");
+    if (mounted) {
+        os::logf("sd probe: %llu MB total, %llu MB used", SD.totalBytes() / 1048576ULL,
+                 SD.usedBytes() / 1048576ULL);
+        s_mounted = true;
+        s_cardPresent = true;
+        s_lastFail = 0;
+        s_sizeMB = SD.totalBytes() / 1048576ULL;
+        s_usedMB = SD.usedBytes() / 1048576ULL;
+    } else {
+        SPI.end();
+        s_lastFail = millis() ? millis() : 1;
+    }
+}
+
 bool formatSd(String& err) {
     if (s_usbOwned) { err = "the host has the card"; return false; }
     audio::releaseI2S();
@@ -208,7 +258,9 @@ bool formatSd(String& err) {
     // Deliberately NOT using a bare sdcard_init() here: it hands back a drive
     // slot even when the card never initialised, and the geometry it then
     // reports is uninitialised memory.
+    os::logf("format: starting");
     if (SD.begin(SD_CS, SPI, 20000000, "/sd", 5, /*format_if_empty=*/false)) {
+        os::logf("format: card mounted, clearing boot sectors first");
         uint32_t ss = SD.sectorSize();
         if (!ss || ss > 4096) ss = 512;
         uint8_t* zero = (uint8_t*)calloc(1, ss);
@@ -229,7 +281,9 @@ bool formatSd(String& err) {
 
     // The mount now fails, which is what makes format_if_empty build a fresh
     // FAT volume. exFAT is not compiled into this FATFS, so it produces FAT32.
+    os::logf("format: running mkfs");
     bool ok = SD.begin(SD_CS, SPI, 20000000, "/sd", 5, /*format_if_empty=*/true);
+    os::logf("format: mkfs mount -> %s", ok ? "OK" : "FAILED");
     if (!ok) {
         SPI.end();
         s_lastFail = millis() ? millis() : 1;

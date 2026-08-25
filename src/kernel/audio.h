@@ -15,6 +15,10 @@ void     setSampleRate(uint32_t hz);
 // wants ~45KB; the Mac daemon over plain HTTP wants almost nothing.
 void     setHeadroomBytes(size_t bytes);
 
+// Memory the mounted SD driver is holding that recording will free anyway,
+// because claiming the microphone unmounts the card (shared GPIO40).
+void     setSdReclaimable(size_t bytes);
+
 void begin();
 bool micReady();
 

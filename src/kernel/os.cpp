@@ -55,8 +55,10 @@ void bootReport() {
     if (store::sdReady())
         logf("sd       mounted, %llu/%llu MB used, %d notes",
              store::sdUsedMB(), store::sdTotalMB(), (int)store::listNotes().size());
-    else
-        logf("sd       NOT MOUNTED - no card, or not FAT32 (exFAT/NTFS won't mount)");
+    else {
+        logf("sd       NOT MOUNTED - probing to find out why:");
+        store::diagnose();
+    }
     logf("wifi     %d saved network(s)", (int)net::savedNetworks().size());
     logf("theme    %s, accent hue %d", theme::presetName(theme::preset()), theme::accentHue());
     logf("ai       default %s, %d provider(s) configured",

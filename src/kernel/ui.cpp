@@ -555,7 +555,7 @@ void await(const String& message, std::function<void()> work) {
         uint32_t secs = (millis() - t0) / 1000;
         if (secs >= 2) centered(84, String(secs) + "s", c().dim);
         statusBar(message, Icon::Cloud);
-        hint(secs > 20 ? "still going - the other end is slow" : "working...");
+        hint(secs > 20 ? "still working - do not unplug" : "working...");
         endFrame();
         delay(70);
     }
