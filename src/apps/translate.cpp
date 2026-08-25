@@ -1,9 +1,9 @@
 #include "apps.h"
 #include "../kernel/ui.h"
 #include "../kernel/theme.h"
-#include "../kernel/audio.h"
 #include "../kernel/ai.h"
 #include "../kernel/store.h"
+#include "../kernel/dictate.h"
 
 // Speak, get it back in another language. The single best argument for putting
 // a microphone and a language model in the same pocket device.
@@ -129,69 +129,19 @@ private:
     void clearResult() { out_ = ""; src_ = ""; roman_ = ""; scroll_ = 0; showRoman_ = false; }
 
     void speakAndTranslate() {
-        if (!audio::micReady()) {
-            os::toast("microphone unavailable - see Voice", os::Tone::Bad);
-            return;
-        }
-        ui::releaseCanvas();
-        audio::setSampleRate(store::getInt("micrate", 16000));
-        audio::setHeadroomBytes(ai::preferredStt() != ai::Stt::Host ? 72 * 1024 : 40 * 1024);
-        if (theme::sounds()) audio::chirpOk();
-        if (!audio::recordStart()) {
-            os::toast(audio::startError(), os::Tone::Bad);
-            ui::acquireCanvas();
+        auto d = dictate::run(String("-> ") + langName(), ui::Icon::Mic);
+        if (!d.ok) {
+            os::toast(d.error, os::Tone::Bad);
+            if (d.error.length()) {
+                src_ = "";
+                out_ = "[" + d.error + "]";
+                roman_ = "";
+                scriptOk_ = true;
+            }
             os::invalidate();
             return;
         }
-
-        // The TAB that started this is still down. Arm the stop only once every
-        // key has been released, or the capture ends one chunk in and comes
-        // back as "too short".
-        bool armed = false;
-        while (audio::recordChunk()) {
-            ui::beginFrame();
-            ui::centered(32, "Listening", ui::c().bad);
-            ui::progress(20, 50, SCREEN_W - 40, 12, audio::level(), ui::c().good);
-            ui::centered(74, String(audio::recordedSeconds(), 1) + "s  -  " +
-                             (armed ? "any key stops" : "let go of TAB"),
-                         ui::c().dim);
-            ui::statusBar(String("-> ") + langName(), ui::Icon::Mic);
-            ui::endFrame();
-            M5Cardputer.update();
-            bool down = M5Cardputer.Keyboard.isPressed();
-            if (!armed && !down) { armed = true; continue; }
-            if (armed && down) break;
-        }
-        audio::recordStop();
-
-        size_t n = audio::recordedSamples();
-        if (n < audio::sampleRate() / 2) {
-            float secs = (float)n / audio::sampleRate();
-            String why = audio::stopReason() == audio::Stop::MicFailed
-                       ? "microphone stopped after " + String(secs, 1) + "s"
-                       : n == 0 ? String("captured nothing - try Voice > M")
-                                : "too short - " + String(secs, 1) + "s";
-            audio::freeBuffer();
-            ui::acquireCanvas();
-            os::toast(why, os::Tone::Bad);
-            os::invalidate();
-            return;
-        }
-
-        ai::Result r;
-        ui::await("Transcribing", [&] { r = ai::transcribe(audio::pcm(), n); });
-        audio::freeBuffer();
-        ui::acquireCanvas();
-        if (!r.ok) {
-            os::toast(r.error, os::Tone::Bad);
-            src_ = "";
-            out_ = "[" + r.error + "]";
-            roman_ = "";
-            scriptOk_ = true;
-            os::invalidate();
-            return;
-        }
-        translate(r.text);
+        translate(d.text);
     }
 
     void translate(const String& text) {

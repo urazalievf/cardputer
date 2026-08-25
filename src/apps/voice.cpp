@@ -245,7 +245,8 @@ private:
             rows--;
         }
         ui::pager(text_, scroll_, ui::c().fg, rows, y);
-        ui::hint(String(havePcm_ ? "P play  " : "") + "S note  D daily  C ask  TAB again");
+        bool canPlay = havePcm_ || wavPath_.length();
+        ui::hint(String(canPlay ? "P play  " : "") + "S note  D daily  C ask  TAB again");
     }
 
     // How long a recording can be is pure arithmetic on a board with no PSRAM:
@@ -442,7 +443,14 @@ private:
     // Hear it back. The samples are gone once the buffer is freed, so this only
     // offers itself while they are still around.
     void playback() {
-        if (!havePcm_ || !audio::bufferHeld()) { os::toast("samples already freed"); return; }
+        // A streamed memo is on the card, not in memory. Play it from there
+        // rather than telling the user the audio they can see the filename of
+        // is unavailable.
+        if (!havePcm_ || !audio::bufferHeld()) {
+            if (wavPath_.length()) { playFromCard(); return; }
+            os::toast("samples already freed");
+            return;
+        }
         audio::speakerOn();
         M5Cardputer.Speaker.setVolume(200);
         M5Cardputer.Speaker.playRaw(audio::pcm(), audio::recordedSamples(),
@@ -465,6 +473,25 @@ private:
             delay(30);
         }
         audio::micOn();
+        os::invalidate();
+    }
+
+    void playFromCard() {
+        uint32_t start = millis();
+        bool ok = audio::playWavFile(wavPath_, [&](float frac) {
+            ui::beginFrame();
+            ui::centered(20, "Playing back", ui::c().accent2);
+            // No live envelope for a file: the waveform belongs to the capture.
+            ui::icon(SCREEN_W / 2 - 5, 44, ui::Icon::Mic, ui::c().accent2);
+            ui::progress(12, 82, SCREEN_W - 24, 6, frac, ui::c().accent2);
+            ui::centered(94, String((millis() - start) / 1000) + "s  -  any key stops",
+                         ui::c().dim);
+            ui::statusBar("Playback", ui::Icon::Mic);
+            ui::endFrame();
+            M5Cardputer.update();
+            return !(M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed());
+        });
+        if (!ok) os::toast("could not play " + wavPath_, os::Tone::Bad);
         os::invalidate();
     }
 

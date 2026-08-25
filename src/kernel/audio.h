@@ -2,6 +2,7 @@
 // one I2S peripheral, so exactly one of them can be live at a time.
 #pragma once
 #include "os.h"
+#include <functional>
 
 namespace audio {
 
@@ -125,6 +126,13 @@ size_t wavHeader(uint8_t* out, size_t pcmBytes);
 // allocation and no recording state. The mic-check screen uses it to prove the
 // I2S path works before anyone commits 128KB to a memo.
 bool  sampleOnce(int16_t* buf, size_t samples);
+
+// Play a WAV off the card without loading it. A streamed recording is far
+// larger than the heap, so the only way to hear one back is a block at a time:
+// two buffers alternate through the driver's two-slot queue. `onFrame` is
+// called between blocks with progress 0..1 and returns false to stop early.
+// Puts the microphone back when it finishes.
+bool playWavFile(const String& path, std::function<bool(float)> onFrame);
 
 void beep(uint16_t freq = 880, uint32_t ms = 60);
 void chirpOk();

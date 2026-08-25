@@ -43,12 +43,19 @@ Without a card, capture stays in RAM and stops when the ring is full, which is
 the old behaviour. Settings > Keep audio turns the file off entirely and forces
 the RAM path.
 
-Saving the transcript as a note adds a link back to the wav. Playback (`P`) only
-offers itself for RAM recordings — a streamed one is on the card, not in memory.
+Saving the transcript as a note adds a link back to the wav. `P` plays either
+kind back: a RAM recording straight from the buffer, a streamed one off the card
+a block at a time, since it is far too big to load.
 
 ## Ask
 `TAB` is the whole point: record, transcribe and send in one press. History
 persists across reboots and replays the last twelve turns for context.
+
+Dictation here and in Translate goes through `kernel/dictate.cpp`, the same
+streaming capture Voice uses — so neither is capped by free RAM any more. The
+audio goes to a scratch file that is deleted once the transcript is back, unless
+Settings > Keep audio is on, in which case it is renamed into `/recordings`. A
+dictation is a means to a transcript, not a memo.
 
 `TAB` ask out loud · `Enter` send typed · `ctrl+P` switch assistant ·
 `ctrl+D` dictate into the field without sending · `ctrl+L` clear
@@ -64,6 +71,9 @@ design — an agent without a filesystem is not an agent.
 
 `TAB` talk · `Enter` translate typed text · `ctrl+L` change language ·
 `ctrl+R` script / romanised · `fn`+`;`/`.` scroll
+
+Speaking uses the same streaming capture as Voice, so a long sentence is no
+longer cut off at whatever fitted in RAM.
 
 The built-in glyph set is ASCII, so for most of these languages the reply had
 nowhere to be drawn. The firmware now embeds efont (~311KB), which covers

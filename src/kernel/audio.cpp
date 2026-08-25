@@ -2,6 +2,7 @@
 #include "store.h"
 #include <esp_heap_caps.h>
 #include <string.h>
+#include <SD.h>
 
 namespace audio {
 
@@ -426,6 +427,97 @@ size_t wavHeader(uint8_t* h, size_t pcmBytes) {
     le16(h + 34, 16);              // bits per sample
     memcpy(h + 36, "data", 4);     le32(h + 40, pcmBytes);
     return 44;
+}
+
+static uint32_t le32at(const uint8_t* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static uint16_t le16at(const uint8_t* p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
+
+bool playWavFile(const String& path, std::function<bool(float)> onFrame) {
+    if (!store::sdAcquire()) return false;
+    File f = SD.open(path, FILE_READ);
+    if (!f) { os::logf("play: cannot open %s", path.c_str()); return false; }
+
+    uint8_t hdr[44];
+    if (f.read(hdr, 44) != 44 || memcmp(hdr, "RIFF", 4) || memcmp(hdr + 8, "WAVE", 4)) {
+        f.close();
+        os::logf("play: %s is not a WAV", path.c_str());
+        return false;
+    }
+    // Read the rate out of the file rather than assuming the current setting:
+    // the memo may have been recorded at 8kHz and the mic switched since.
+    uint32_t rate = le32at(hdr + 24);
+    uint16_t channels = le16at(hdr + 22);
+    uint16_t bits = le16at(hdr + 34);
+    uint32_t dataBytes = le32at(hdr + 40);
+    if (rate < 4000 || rate > 48000 || bits != 16 || channels != 1) {
+        f.close();
+        os::logf("play: unsupported format (%luHz %ubit %uch)",
+                 (unsigned long)rate, bits, channels);
+        return false;
+    }
+    size_t fileData = f.size() > 44 ? f.size() - 44 : 0;
+    if (dataBytes == 0 || dataBytes > fileData) dataBytes = fileData;   // header not patched
+    if (dataBytes == 0) { f.close(); return false; }
+
+    // Two buffers alternating through a two-slot queue: playRaw() keeps the
+    // pointer rather than copying, so a buffer must not be refilled until the
+    // slot holding it has drained.
+    const size_t BLOCK = 1024;                     // samples, 2KB each
+    int16_t* buf[2] = {
+        (int16_t*)malloc(BLOCK * sizeof(int16_t)),
+        (int16_t*)malloc(BLOCK * sizeof(int16_t)),
+    };
+    if (!buf[0] || !buf[1]) {
+        free(buf[0]); free(buf[1]);
+        f.close();
+        os::logf("play: no room for the playback buffers");
+        return false;
+    }
+
+    speakerOn();
+    M5Cardputer.Speaker.setVolume(200);
+    const int ch = 0;
+
+    size_t sent = 0;
+    int idx = 0;
+    bool stopped = false;
+    while (sent < dataBytes) {
+        size_t want = dataBytes - sent;
+        if (want > BLOCK * sizeof(int16_t)) want = BLOCK * sizeof(int16_t);
+        int got = f.read((uint8_t*)buf[idx], want);
+        if (got <= 0) break;
+
+        // Wait for a free slot before overwriting the buffer this one will use.
+        uint32_t deadline = millis() + 3000;
+        while (M5Cardputer.Speaker.isPlaying(ch) >= 2) {
+            if (millis() > deadline) { stopped = true; break; }
+            delay(2);
+        }
+        if (stopped) break;
+
+        M5Cardputer.Speaker.playRaw(buf[idx], got / sizeof(int16_t), rate, false, 1, ch);
+        sent += got;
+        idx ^= 1;
+
+        if (onFrame && !onFrame((float)sent / dataBytes)) { stopped = true; break; }
+    }
+
+    if (stopped) M5Cardputer.Speaker.stop();
+    else {
+        uint32_t deadline = millis() + 4000;
+        while (M5Cardputer.Speaker.isPlaying(ch) && millis() < deadline) {
+            if (onFrame && !onFrame(1.0f)) { M5Cardputer.Speaker.stop(); break; }
+            delay(10);
+        }
+    }
+
+    f.close();
+    free(buf[0]);
+    free(buf[1]);
+    micOn();
+    return true;
 }
 
 void beep(uint16_t freq, uint32_t ms) {
