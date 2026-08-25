@@ -32,7 +32,7 @@ a pocket.
 | | |
 |---|---|
 | **Notes** | Markdown on the SD card — real `.md` files, so the card drops into an Obsidian vault. `S` pushes one over WiFi, `A` asks your assistant about the note you're reading, `O` cycles sort order. |
-| **Voice** | `TAB` records with a live scrolling waveform, then transcribes. `P` plays it back. Save as a note, append to today's Obsidian daily note, or send to the assistant. |
+| **Voice** | `TAB` records with a live scrolling waveform, then transcribes. The audio is written to `/recordings/*.wav` on the card and the note links back to it. `P` plays it back, `Q` switches quality. |
 | **Ask** | Conversation with persistent history. `TAB` asks out loud — record, transcribe and send in one press. `ctrl+P` switches vendor mid-thread. |
 | **Code** | A coding agent — `claude`, `codex` or `gemini` CLI — with tools, in a project directory on your Mac. |
 | **Translate** | `TAB`, speak, get it back in any of 15 languages. |
@@ -192,6 +192,21 @@ Vault paths are resolved against the vault root, so the device cannot write
 outside it. `vault_exclude` hides notes from the handheld entirely — it defaults
 to `["*.secret.md", ".*", ".*/*"]`, because a pocket device is easy to lose and
 your vault is bigger than what belongs on it.
+
+## What lives on the card
+
+Everything you create goes to the SD card as an ordinary file, so pulling the
+card out gives you your data with no export step.
+
+| | |
+|---|---|
+| `/notes/*.md` | one markdown file per note, Obsidian-ready |
+| `/recordings/*.wav` | 16-bit mono WAV, timestamped, playable anywhere |
+| `/tasks.md` | a markdown task list |
+
+Settings, API keys, WiFi passwords and chat history stay in NVS on the chip —
+they are small, and they should not travel with a card you might hand to
+someone. Without a card, notes fall back to NVS and audio is not kept.
 
 ## Secrets
 

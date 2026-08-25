@@ -147,7 +147,14 @@ private:
     }
 
     void drawResult() {
-        ui::pager(text_, scroll_, ui::c().fg, theme::bodyRows());
+        int rows = theme::bodyRows();
+        if (wavPath_.length()) {
+            String name = wavPath_.substring(wavPath_.lastIndexOf('/') + 1);
+            ui::text(3, BODY_Y, "saved " + name, ui::c().good);
+            ui::pager(text_, scroll_, ui::c().fg, rows - 1, BODY_Y + theme::rowHeight());
+            return;
+        }
+        ui::pager(text_, scroll_, ui::c().fg, rows);
         ui::hint(String(havePcm_ ? "P play  " : "") + "S note  D daily  C ask  TAB again");
     }
 
@@ -163,6 +170,7 @@ private:
     void start() {
         if (!audio::micReady()) { os::toast("no mic", os::Tone::Bad); return; }
         havePcm_ = false;
+        wavPath_ = "";
         prepareBudget();
         // The capture buffer and the UI canvas cannot both fit in internal RAM.
         ui::releaseCanvas();
@@ -243,6 +251,9 @@ private:
     void saveNote() {
         String file = store::newNoteName(ui::firstLine(text_, 30));
         String body = "# " + ui::firstLine(text_, 40) + "\n\n" + text_ + "\n";
+        // Point the note at the audio it came from, so the two stay connected
+        // once they are sitting in an Obsidian vault.
+        if (wavPath_.length()) body += "\n[audio](" + wavPath_ + ")\n";
         bool ok = store::writeNote(file, body);
         os::toast(ok ? "saved to Notes" : "save failed", ok ? os::Tone::Good : os::Tone::Bad);
     }
@@ -271,7 +282,7 @@ private:
     }
 
     Mode mode_ = IDLE;
-    String text_;
+    String text_, wavPath_;
     int scroll_ = 0;
     bool havePcm_ = false;
 };

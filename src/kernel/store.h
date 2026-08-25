@@ -65,10 +65,16 @@ std::vector<Entry> listDir(const String& path);
 
 // --- Notes (markdown on SD, NVS mirror when no card) ---
 static const char* NOTES_DIR = "/notes";
+static const char* REC_DIR   = "/recordings";
 std::vector<String> listNotes();                 // filenames, newest first
 String readNote(const String& file);
 bool   writeNote(const String& file, const String& body);
 bool   deleteNote(const String& file);
 String newNoteName(const String& title);         // 2026-08-24-1432-title.md
+
+// Write captured audio to the card as a playable 16-bit mono WAV. Called after
+// the microphone has let go of GPIO40, so the card can be mounted again.
+bool   writeWav(const String& path, const int16_t* pcm, size_t samples);
+String newRecordingName();                       // 20260824-143210.wav
 
 }  // namespace store

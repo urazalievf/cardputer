@@ -24,7 +24,7 @@ void begin() {
     prefs.begin("cfg", false);
     prefs.end();
     sdMount();
-    if (s_cardPresent) ensureDir(NOTES_DIR);
+    if (s_cardPresent) { ensureDir(NOTES_DIR); ensureDir(REC_DIR); }
 }
 
 // isKey() first: Preferences logs an ERROR for every miss, and on first boot
@@ -400,6 +400,43 @@ bool deleteNote(const String& file) {
     names.erase(std::remove(names.begin(), names.end(), file), names.end());
     nvsSaveIndex(names);
     return true;
+}
+
+bool writeWav(const String& path, const int16_t* pcm, size_t samples) {
+    if (!pcm || !samples) return false;
+    if (!sdAcquire()) return false;
+    ensureDir(REC_DIR);
+
+    File f = SD.open(path, FILE_WRITE);
+    if (!f) return false;
+
+    size_t pcmBytes = samples * sizeof(int16_t);
+    uint8_t hdr[44];
+    audio::wavHeader(hdr, pcmBytes);
+    if (f.write(hdr, 44) != 44) { f.close(); return false; }
+
+    // Chunked so a long recording does not stall the SPI bus in one call.
+    const uint8_t* p = (const uint8_t*)pcm;
+    size_t off = 0;
+    while (off < pcmBytes) {
+        size_t n = pcmBytes - off;
+        if (n > 4096) n = 4096;
+        size_t w = f.write(p + off, n);
+        if (w != n) { f.close(); return false; }
+        off += w;
+    }
+    f.close();
+    os::logf("saved %s (%u KB)", path.c_str(), (unsigned)((44 + pcmBytes) / 1024));
+    return true;
+}
+
+String newRecordingName() {
+    time_t now = time(nullptr);
+    struct tm tmv;
+    localtime_r(&now, &tmv);
+    char stamp[24];
+    strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &tmv);
+    return String(REC_DIR) + "/" + stamp + ".wav";
 }
 
 String newNoteName(const String& title) {

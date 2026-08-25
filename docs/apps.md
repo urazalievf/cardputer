@@ -18,7 +18,12 @@ eight envelope points so the trace scrolls smoothly. The RGB LED goes red while
 recording, because the screen is not always facing you.
 
 `TAB` record / again · `P` play it back · `S` save as a note · `D` append to
-today's daily note · `C` send to the assistant
+today's daily note · `C` send to the assistant · `Q` 16kHz / 8kHz
+
+The audio itself is written to `/recordings/<timestamp>.wav` as soon as
+recording stops -- before transcription, so a failed or unconfigured
+speech-to-text backend never costs you the recording. Saving the transcript as
+a note adds a link back to the wav. Turn it off with Settings > Keep audio.
 
 Recording length depends on free RAM. The UI canvas is released first to make
 room, which is what buys ~4 seconds on a board with no PSRAM.

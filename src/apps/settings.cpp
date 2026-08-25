@@ -129,6 +129,7 @@ private:
             {TOGGLE, "Auto fallback","aifall"},
             {ENUMSEL,"Speech input","aistt"},
             {ENUMSEL,"Mic quality", "micrate"},
+            {TOGGLE, "Keep audio",  "recsave"},
             {STR,    "Claude model","m_anthropic", 0,0,1, "claude-haiku-4-5-20251001"},
             {STR,    "GPT model",   "m_openai",    0,0,1, "gpt-4o-mini"},
             {STR,    "Gemini model","m_gemini",    0,0,1, "gemini-2.0-flash"},
