@@ -399,15 +399,27 @@ void inputLine(int y, const String& prompt, const String& value,
         g.fillRect(6 + textW(prompt) + textW(show), y, 2, theme::bigText() ? 16 : 8, c().accent);
 }
 
+// A rotating arc on a faint track. Eight discrete dots read as a blocky ring
+// on a 240x135 panel; a swept arc reads as motion.
 void spinner(int cx, int cy, uint16_t col) {
-    int step = (millis() / 90) % 8;
-    for (int i = 0; i < 8; i++) {
-        float a = i * PI / 4.0f;
-        int x = cx + (int)(7 * cosf(a));
-        int y = cy + (int)(7 * sinf(a));
-        int age = (i - step + 8) % 8;
-        if (age < 4) gfx().fillCircle(x, y, age == 0 ? 2 : 1, col);
-    }
+    auto& g = gfx();
+    const int rOut = 12, rIn = 8;
+
+    g.fillArc(cx, cy, rIn, rOut, 0, 360, c().surface);      // track
+    g.drawArc(cx, cy, rIn, rOut, 0, 360, c().border);       // rim, so it reads as a ring
+
+    float head = fmodf(millis() * 0.30f, 360.0f);           // ~50 rpm
+
+    // A dim lead-in behind the bright head gives the sweep a direction.
+    auto arc = [&](float from, float len, uint16_t colour) {
+        float a0 = fmodf(from + 360.0f, 360.0f);
+        float a1 = a0 + len;
+        if (a1 <= 360.0f) { g.fillArc(cx, cy, rIn, rOut, a0, a1, colour); return; }
+        g.fillArc(cx, cy, rIn, rOut, a0, 360.0f, colour);   // fillArc will not wrap
+        g.fillArc(cx, cy, rIn, rOut, 0.0f, a1 - 360.0f, colour);
+    };
+    arc(head - 70.0f, 70.0f, c().dim);
+    arc(head, 55.0f, col);
 }
 
 bool editBuffer(String& buf, const KeyEvent& k, size_t maxLen, bool multiline) {

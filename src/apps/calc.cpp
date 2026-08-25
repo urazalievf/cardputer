@@ -16,11 +16,19 @@ public:
     String title() const override { return deg_ ? "Calc  deg" : "Calc  rad"; }
 
     bool onBack() override {
-        if (expr_.length()) { expr_ = ""; os::invalidate(); return true; }
+        if (expr_.length()) { expr_ = ""; chained_ = false; os::invalidate(); return true; }
         return false;
     }
 
     void onEnter() override { load(); os::invalidate(); }
+
+    // After a result, an operator continues from it and a digit starts over --
+    // the way a physical calculator behaves. Typing "4+5", Enter, "/2" gives
+    // 4.5 without retyping the 9.
+    static bool continuesResult(char c) {
+        return c == '+' || c == '-' || c == '*' || c == '/' ||
+               c == '%' || c == '^' || c == ')';
+    }
 
     void onKey(const KeyEvent& k) override {
         if (k.enter) { evaluate(); return; }
@@ -30,6 +38,12 @@ public:
         if (expr_.length() == 0) {
             if (k.up)   { if (histSel_ < (int)hist_.size() - 1) histSel_++; recall(); return; }
             if (k.down) { if (histSel_ > 0) { histSel_--; recall(); } return; }
+        }
+        if (chained_ && !k.chars.empty()) {
+            if (!continuesResult(k.chars[0])) expr_ = "";   // a fresh calculation
+            chained_ = false;
+        } else if (chained_ && k.del) {
+            chained_ = false;                               // editing the result is fine
         }
         if (ui::editBuffer(expr_, k, 80)) { err_ = ""; os::invalidate(); }
     }
@@ -54,7 +68,8 @@ public:
         ui::gfx().setTextSize(1);
 
         ui::inputLine(104, "= ", expr_, ui::c().fg);
-        ui::hint("Enter evaluate  ans  ctrl+D deg/rad  ctrl+L clear");
+        ui::hint(chained_ ? "type an operator to continue, a digit to start over"
+                          : "Enter evaluate   ans  pi  sqrt()   ctrl+D deg/rad");
     }
 
 private:
@@ -78,13 +93,16 @@ private:
         hist_.insert(hist_.begin(), {e, last_});
         while (hist_.size() > 12) hist_.pop_back();
         histSel_ = -1;
-        expr_ = "";
+        // Leave the answer in the input so it can be built on directly.
+        expr_ = last_;
+        chained_ = true;
         save();
         os::invalidate();
     }
 
     void recall() {
         if (histSel_ >= 0 && histSel_ < (int)hist_.size()) expr_ = hist_[histSel_].expr;
+        chained_ = false;
         os::invalidate();
     }
 
@@ -115,7 +133,7 @@ private:
     String expr_, last_, err_;
     double ansValue_ = 0;
     int histSel_ = -1;
-    bool deg_ = false, loaded_ = false;
+    bool deg_ = false, loaded_ = false, chained_ = false;
 };
 
 App* calcApp() { static Calc a; return &a; }

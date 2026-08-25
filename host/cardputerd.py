@@ -68,6 +68,10 @@ DEFAULTS = {
     "faster_whisper_model": "base.en",
     "openai_api_key": "",              # or set OPENAI_API_KEY in the environment
     "advertise": True,
+    # Shared secret. Empty means unauthenticated, which is only acceptable on a
+    # network you trust -- this daemon runs a coding agent and can read your
+    # vault. Generated on first run if absent.
+    "auth_token": "",
 }
 
 
@@ -75,6 +79,17 @@ def load_config(path: Path) -> dict:
     cfg = dict(DEFAULTS)
     if path.exists():
         cfg.update(json.loads(path.read_text()))
+
+    # Mint a token on first run rather than defaulting to wide open.
+    if not cfg.get("auth_token"):
+        import secrets as _secrets
+        cfg["auth_token"] = _secrets.token_urlsafe(24)
+        if path.exists():
+            saved = json.loads(path.read_text())
+            saved["auth_token"] = cfg["auth_token"]
+            path.write_text(json.dumps(saved, indent=2) + "\n")
+            log(f"minted an auth token and saved it to {path.name}")
+
     cfg["claude_bin"] = shutil.which(cfg["claude_bin"]) or cfg["claude_bin"]
     if not cfg["openai_api_key"]:
         cfg["openai_api_key"] = os.environ.get("OPENAI_API_KEY", "")
@@ -367,6 +382,24 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = f"cardputerd/{VERSION}"
 
+    def _authorised(self) -> bool:
+        """Every endpoint except /ping needs the shared secret.
+
+        /ping stays open so the device can discover the daemon and report
+        whether it is reachable; it exposes nothing but feature flags.
+        """
+        token = CFG.get("auth_token") or ""
+        if not token:
+            return True
+        sent = self.headers.get("Authorization", "")
+        if sent.startswith("Bearer "):
+            sent = sent[7:]
+        import hmac
+        return hmac.compare_digest(sent, token)
+
+    def _deny(self):
+        self._send({"error": "unauthorised - set the daemon token on the device"}, 401)
+
     def _send(self, obj: dict, code: int = 200):
         body = json.dumps(obj).encode()
         self.send_response(code)
@@ -382,6 +415,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         url = urlparse(self.path)
+        if url.path != "/ping" and not self._authorised():
+            return self._deny()
         if url.path == "/ping":
             backends = available_backends()
             return self._send({
@@ -398,6 +433,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         path = urlparse(self.path).path
+        if not self._authorised():
+            log(f"denied unauthenticated POST {path}")
+            return self._deny()
         try:
             if path == "/transcribe":
                 length = int(self.headers.get("Content-Length", 0))
@@ -475,6 +513,8 @@ def main():
     log(f"agents:  {', '.join(available_backends()) or 'none found'}")
     log(f"vault:   {vault_root() or '(not configured)'}")
     log(f"stt:     {CFG['stt']}")
+    log(f"token:   {CFG['auth_token']}")
+    log("         set it on the device:  tools/cardputer set hosttoken <token>")
 
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     try:

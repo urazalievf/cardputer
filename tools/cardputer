@@ -6,6 +6,7 @@ the repository leaks it permanently. This talks to the device's serial console
 instead, so keys go straight from a gitignored file on your machine into the
 device's internal storage and never touch WiFi, the SD card, or git.
 
+    cardputer key claude             # prompts, hidden, stays out of shell history
     cardputer info
     cardputer set k_openai sk-...
     cardputer get k_openai
@@ -76,6 +77,53 @@ class Device:
         self.s.close()
 
 
+# provider name -> (NVS key, `use` name, what the key usually starts with)
+PROVIDERS = {
+    "claude":     ("k_anthropic", "claude",     "sk-ant-"),
+    "anthropic":  ("k_anthropic", "claude",     "sk-ant-"),
+    "openai":     ("k_openai",    "chatgpt",    "sk-"),
+    "chatgpt":    ("k_openai",    "chatgpt",    "sk-"),
+    "gemini":     ("k_gemini",    "gemini",     ""),
+    "groq":       ("k_groq",      "groq",       "gsk_"),
+    "openrouter": ("k_openrtr",   "openrouter", "sk-or-"),
+}
+
+
+def set_key(dev: Device, provider: str) -> int:
+    """Prompt for a key without echoing it, and without putting it in history.
+
+    Passing a key as a command-line argument leaves it in ~/.zsh_history and in
+    the process list. getpass avoids both.
+    """
+    import getpass
+
+    entry = PROVIDERS.get(provider.lower())
+    if not entry:
+        print("provider must be one of: " + ", ".join(sorted(set(PROVIDERS))))
+        return 1
+    nvs_key, use_name, prefix = entry
+
+    if sys.stdin.isatty():
+        secret = getpass.getpass(f"Paste the {provider} API key (input hidden), then Enter: ")
+    else:
+        secret = sys.stdin.read()          # allows:  pbpaste | cardputer key claude
+    secret = secret.strip()
+
+    if not secret:
+        print("nothing entered - aborted")
+        return 1
+    if prefix and not secret.startswith(prefix):
+        print(f"warning: a {provider} key usually starts with '{prefix}' - sending it anyway")
+    if " " in secret or "\n" in secret:
+        print("that contains whitespace, which a key should not - aborted")
+        return 1
+
+    print(dev.send(f"set {nvs_key} {secret}"))
+    print(dev.send(f"use {use_name}"))
+    print(dev.send("keys"))
+    return 0
+
+
 def push_env(dev: Device, path: str) -> int:
     """Push KEY=VALUE lines. Blank lines and # comments are ignored."""
     saved = 0
@@ -105,7 +153,12 @@ def main() -> int:
     dev = Device(find_port(ns.port))
     try:
         verb = ns.args[0]
-        if verb == "env":
+        if verb == "key":
+            if len(ns.args) < 2:
+                print("usage: cardputer key <claude|openai|gemini|groq|openrouter>")
+                return 1
+            return set_key(dev, ns.args[1])
+        elif verb == "env":
             if len(ns.args) < 2:
                 return print("usage: cardputer env <file>") or 1
             n = push_env(dev, ns.args[1])

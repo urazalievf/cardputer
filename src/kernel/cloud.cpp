@@ -85,6 +85,8 @@ Result hostPost(const String& path, const String& body, uint32_t timeoutMs) {
     http.setReuse(false);
     if (!http.begin(base + path)) { r.error = "host unreachable"; return r; }
     http.addHeader("Content-Type", "application/json");
+    String token = store::getStr("hosttoken", "");
+    if (token.length()) http.addHeader("Authorization", "Bearer " + token);
     int code = http.POST(body);
     if (code <= 0) { r.error = String("host: ") + http.errorToString(code); http.end(); return r; }
     String payload = http.getString();
@@ -117,6 +119,12 @@ Result hostTranscribe(const int16_t* pcm, size_t samples) {
     if (!client.connect(host.c_str(), port, 4000)) { r.error = "host unreachable"; return r; }
 
     client.printf("POST /transcribe HTTP/1.1\r\nHost: %s\r\n", host.c_str());
+    String token = store::getStr("hosttoken", "");
+    if (token.length()) {
+        client.print("Authorization: Bearer ");
+        client.print(token);
+        client.print("\r\n");
+    }
     client.print("Content-Type: audio/wav\r\n");
     client.printf("Content-Length: %u\r\nConnection: close\r\n\r\n", (unsigned)(44 + pcmBytes));
     client.write(hdr, 44);
@@ -207,6 +215,8 @@ std::vector<String> vaultList(const String& dir) {
     http.setConnectTimeout(3000);
     http.setTimeout(20000);
     if (!http.begin(hostBase() + "/vault/list?dir=" + dir)) return out;
+    String token = store::getStr("hosttoken", "");
+    if (token.length()) http.addHeader("Authorization", "Bearer " + token);
     if (http.GET() == 200) {
         JsonDocument d;
         if (!deserializeJson(d, http.getString()))

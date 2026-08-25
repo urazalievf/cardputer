@@ -37,7 +37,7 @@ a pocket.
 | **Code** | A coding agent — `claude`, `codex` or `gemini` CLI — with tools, in a project directory on your Mac. |
 | **Translate** | `TAB`, speak, get it back in any of 15 languages. |
 | **Tasks** | A checklist stored as a markdown task list, which is already the format Obsidian wants. `S` syncs it. |
-| **Calc** | A real expression parser: `12*(3+4)/2`, `sqrt`, `sin`, `ln`, `ans`, `pi`, deg/rad, persistent history. |
+| **Calc** | A real expression parser: `12*(3+4)/2`, `sqrt`, `sin`, `ln`, `ans`, `pi`, deg/rad. Results chain, so `4+5` then `/2` gives 4.5. |
 | **Timer** | Stopwatch, countdown and pomodoro, with an audible finish. |
 | **Weather** | Current conditions and three days, over plain HTTP with no API key. Finds you by IP, or name a city. |
 | **Remote** | Universal IR remote — Samsung, LG/NEC and Sony code sets, or type a raw address/command. |
@@ -145,6 +145,20 @@ line in [main.cpp](src/main.cpp).
 - [docs/hardware.md](docs/hardware.md) — pinouts and the three traps
 - [docs/roadmap.md](docs/roadmap.md) — what shipped, what is next, what is broken
 
+## Install
+
+Step by step, from a device you have never flashed:
+**[docs/install.md](docs/install.md)**.
+
+The short version:
+
+```bash
+python3 -m pip install --user platformio pyserial
+git clone https://github.com/urazalievf/cardputer.git && cd cardputer
+pio run -e cardputer -t upload
+./tools/cardputer wifi "My Network" "my-password"
+```
+
 ## Build
 
 ```bash
@@ -187,6 +201,11 @@ Then **Settings → Find Mac** (Bonjour), or type the address. **Test Mac** conf
 | `POST /code` | `{prompt, project, backend}` → the chosen CLI, with tools |
 | `POST /transcribe` | raw WAV → whisper.cpp, faster-whisper, or the API |
 | `POST /vault/note` · `/vault/daily` · `/vault/read` · `GET /vault/list` | Obsidian |
+
+**The daemon requires a token.** It mints one on first run and refuses every
+request without it — it can run a coding agent and read your vault, so an
+unauthenticated daemon is an open door to anyone on your network. Set it with
+`./tools/cardputer set hosttoken <token>`.
 
 Vault paths are resolved against the vault root, so the device cannot write
 outside it. `vault_exclude` hides notes from the handheld entirely — it defaults

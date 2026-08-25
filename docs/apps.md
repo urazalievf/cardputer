@@ -61,6 +61,10 @@ round floor ceil`, and the constants `pi`, `e`, `ans`.
 `Enter` evaluate · `↑`/`↓` recall history · `ctrl+D` degrees/radians ·
 `ctrl+L` clear history
 
+Results chain. After `4+5` the answer stays in the input, so typing `/2` gives
+`4.5` without retyping the 9. An operator continues from the result; a digit
+starts a fresh calculation -- the same rule a physical calculator uses.
+
 ## Timer
 `TAB` cycles stopwatch → countdown → pomodoro. Pomodoro rolls straight from
 focus into break and counts rounds.
