@@ -139,10 +139,10 @@ WS2812, driven by the core's own `rgbLedWrite()` — no library needed. It is
 worth using: it is the only output visible when the screen is face-down, which
 is exactly the situation while recording a voice memo.
 
-**USB mass storage does not work yet.** The goal was to mount the SD card in
-Finder over the same cable that powers the device. `kernel/usbdisk.cpp` is
-written and compiles, and `env:cardputer-usbdrive` builds it, but no volume ever
-appears. What is established:
+**USB mass storage works, but only for a card with a small enough FAT.** The
+goal was to mount the SD card in Finder over the same cable that powers the
+device. `kernel/usbdisk.cpp` does that now. What was wrong, and what still
+bounds it:
 
 - Mass storage requires TinyUSB (`ARDUINO_USB_MODE=0`). The hardware CDC/JTAG
   bridge cannot present an MSC interface at all.
@@ -151,13 +151,53 @@ appears. What is established:
   descriptor. Registering MSC in `setup()` is silently too late.
   `ARDUINO_USB_ON_BOOT` is a plain `#define` in `USB.h`, not `#ifndef`-guarded,
   so it cannot be overridden from `build_flags`.
-- Working around that with `ARDUINO_USB_CDC_ON_BOOT=0` plus an explicit
-  `USB.begin()` after registering MSC does produce a composite device
-  (`bDeviceClass 239`, "M5Stack StampS3"), but still no volume — and that
-  build's CDC console is silent, so there is nothing to debug from.
-- In TinyUSB mode esptool cannot reset the board: uploads fail with "No serial
-  data received". A 1200-baud touch reliably drops it back to the ROM
-  bootloader; `tools/usb_touch.py` automates this as a pre-upload action.
+- **The bug that hid everything else:** `sdcard_init()` allocates a driver slot
+  and configures SPI. It does not address the card. Nothing answers CMD0 until
+  `ff_sd_initialize()` runs, and the only thing that ever called it was FATFS,
+  from inside `sdcard_mount()`. So the raw block API — which is what mass
+  storage serves and what `usbdisk::begin()` sized the volume from — reported
+  zero sectors and failed every read. `begin()` bailed with "card reported no
+  geometry", `s_available` stayed false, and no volume could ever appear.
+  `store::sdRawInit()` fixes it. `store::diagnose()` and the selftest's
+  low-level probe had the same bug and had been reporting a dead card for
+  months; the probe additionally ran without unmounting first, so
+  `sdcard_init()` handed back a *second* slot on the same card and the two
+  fought, which is why its sector count differed on every run.
+- With that fixed the host reads the partition table and identifies the volume.
+  The CDC console in this build also came back — its silence was a symptom of
+  MSC failing to register, not a separate problem.
+- `onRead`/`onWrite` ignored TinyUSB's `offset` and served whole sectors from
+  `lba`, which returns the wrong bytes for any split transfer and nothing at all
+  when `bufsize < 512`. They now handle partial sectors, and read-modify-write
+  for partial writes rather than destroying the bytes either side.
+- Contiguous runs go through `ff_sd_read()` with a count, which uses CMD18 and
+  holds the SPI lock for the whole run, instead of a CMD17 per 512 bytes.
+
+**What still bounds it: the ESP32-S3 has no High-Speed USB PHY.** Measured
+throughput serving MSC is ~690 KB/s, and that number does not move — not with
+the SPI clock at 40 MHz instead of 20, not with the radios stood down and the
+display quiesced, not with multi-block reads. It is the Full-Speed bulk ceiling.
+
+A host will not show you one file until it has read the entire FAT, and a FAT is
+four bytes per cluster:
+
+| Volume (32 KB clusters) | FAT size | Read at 690 KB/s |
+|---|---|---|
+| 32 GB | ~4 MB | ~6 s |
+| 64 GB | ~8 MB | ~12 s |
+| 128 GB | ~15 MB | ~22 s |
+| 244 GB | ~29 MB | ~42 s |
+
+macOS gives up at **34.5 seconds**, measured identically across four builds. So
+a 244 GB card formatted FAT32 cannot mount: it gets about 82% of the way through
+its 29 MB FAT and times out, having served ~46,300 sectors with zero read
+errors. Nothing in the firmware can fix that — it is 29 MB over a 12 Mbit link
+against a fixed timeout.
+
+Use a card of 64 GB or less, or give a larger card a smaller FAT32 partition and
+leave the rest unallocated. `console: bpb` prints the card's real geometry and
+`console: usb` the served/failed sector counts, which is how the above was
+established.
 
 Until this is solved, the Share app serves the card over HTTP instead, which
 needs no USB gymnastics and works on any device with a browser.

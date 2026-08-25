@@ -217,6 +217,32 @@ static bool handleGlobal(const KeyEvent& k) {
     return false;
 }
 
+void runQuiet() {
+    // Keys and the console, so the device stays drivable and debuggable; no
+    // drawing, no radios, no battery ADC.
+    M5Cardputer.update();
+    console::poll();
+    App* app = current();
+    if (!app) return;
+    if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
+        KeyEvent k = readKey();
+        if (!handleGlobal(k)) {
+            if (k.esc) back();
+            else app->onKey(k);
+        }
+        s_dirty = true;
+    }
+    // One frame when something actually changed, and none otherwise. A static
+    // screen costs the card nothing; a screen repainting on a timer competes
+    // for the same SPI host the host is trying to read through.
+    if (consumeDirty()) {
+        ui::beginFrame();
+        app->draw();
+        ui::statusBar(app->title(), app->icon(), app->accent());
+        ui::endFrame();
+    }
+}
+
 void run() {
     M5Cardputer.update();
     net::tick();

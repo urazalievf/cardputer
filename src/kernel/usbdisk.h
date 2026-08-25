@@ -19,6 +19,15 @@ bool attached();           // the host currently sees media
 uint32_t sectorCount();
 uint64_t sizeMB();
 uint32_t readCount();
+// Sectors the host asked for that we could not serve, and the last one that
+// failed. A volume that identifies but will not mount is almost always this.
+uint32_t failCount();
+uint32_t lastFailLba();
+uint32_t callCount();
+uint32_t maxBufsize();
+// Decode the MBR and the FAT32 BPB to the log. How much FAT a volume has is
+// what decides whether a host can mount it over a Full-Speed link at all.
+void logGeometry();
 uint32_t writeCount();
 
 bool attach();             // give the card to the host

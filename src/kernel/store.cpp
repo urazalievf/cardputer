@@ -14,6 +14,10 @@
 // global scope; inside namespace store it mangles as store::ff_sd_initialize
 // and links against nothing.
 extern uint8_t ff_sd_initialize(uint8_t pdrv);
+// DRESULT is an enum and UINT an unsigned int; only the parameters are mangled,
+// so declaring the return as int links against the same symbol. RES_OK is 0.
+extern int ff_sd_read(uint8_t pdrv, uint8_t* buffer, uint32_t sector, unsigned int count);
+extern int ff_sd_write(uint8_t pdrv, const uint8_t* buffer, uint32_t sector, unsigned int count);
 
 namespace store {
 
@@ -90,6 +94,16 @@ bool sdRawInit(uint8_t pdrv) {
         return false;
     }
     return true;
+}
+
+bool sdRawRead(uint8_t pdrv, uint8_t* buf, uint32_t sector, uint32_t count) {
+    if (pdrv == 0xFF || !count) return false;
+    return ff_sd_read(pdrv, buf, sector, (unsigned int)count) == 0;
+}
+
+bool sdRawWrite(uint8_t pdrv, const uint8_t* buf, uint32_t sector, uint32_t count) {
+    if (pdrv == 0xFF || !count) return false;
+    return ff_sd_write(pdrv, buf, sector, (unsigned int)count) == 0;
 }
 
 bool sdReady() { return s_cardPresent; }

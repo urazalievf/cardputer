@@ -50,6 +50,14 @@ static const char* K_TZ          = "tz";         // POSIX TZ string for NTP
 // appeared on the host. Anything serving raw sectors has to do this itself.
 bool sdRawInit(uint8_t pdrv);
 
+// Contiguous raw transfers. sd_read_raw() moves exactly one sector per call,
+// which means a CMD17, an address and a busy-wait for every 512 bytes. The
+// core's underlying ff_sd_read() takes a count and uses CMD18 for a run,
+// holding the SPI lock across the whole thing -- several times faster, and it
+// stops interleaving with the display, which shares SPI2_HOST with the card.
+bool sdRawRead(uint8_t pdrv, uint8_t* buf, uint32_t sector, uint32_t count);
+bool sdRawWrite(uint8_t pdrv, const uint8_t* buf, uint32_t sector, uint32_t count);
+
 bool sdReady();          // a working card was seen, whether or not it's mounted now
 bool sdMounted();        // ...and it is mounted right now
 bool sdMount(bool force = false);     // safe to call repeatedly

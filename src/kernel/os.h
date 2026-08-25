@@ -72,6 +72,9 @@ enum class Tone : uint8_t { Info, Good, Bad };
 void begin();
 void registerApp(App* app);
 void run();
+// The event loop with rendering and the radios stood down: used while USB mass
+// storage has the card, where every millisecond of CPU is throughput.
+void runQuiet();
 
 void launch(int index);
 void launchByName(const char* name);
