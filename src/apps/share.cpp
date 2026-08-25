@@ -5,6 +5,7 @@
 #include "../kernel/store.h"
 #include <WiFi.h>
 #include <WebServer.h>
+#include <esp_random.h>
 
 // Serve the SD card over HTTP so a phone or laptop can pull notes off the
 // device without a cable. Falls back to hosting its own access point when
@@ -59,18 +60,24 @@ public:
             return;
         }
 
-        ui::centered(28, "Open in a browser", ui::c().dim);
+        ui::centered(24, "Open in a browser", ui::c().dim);
         ui::gfx().setTextSize(2);
         String url = String("http://") + address();
         int w = (int)url.length() * 12;
-        ui::text(max(2, (SCREEN_W - w) / 2), 44, url, ui::c().accent);
+        ui::text(max(2, (SCREEN_W - w) / 2), 38, url, ui::c().accent);
         ui::gfx().setTextSize(1);
         if (ap_) {
-            ui::centered(70, String("join wifi: ") + AP_SSID, ui::c().fg);
-            ui::centered(82, String("password: ") + AP_PASS, ui::c().dim);
-        } else {
-            ui::centered(74, String(hits_) + " request(s) served", ui::c().dim);
+            ui::centered(60, String("join wifi: ") + AP_SSID + "  pw " + AP_PASS, ui::c().dim);
         }
+        // The PIN is the whole point of the setup form: it proves whoever is
+        // filling it in is holding the device.
+        ui::centered(ap_ ? 74 : 62, "setup PIN", ui::c().dim);
+        ui::gfx().setTextSize(2);
+        String p = String(pin_);
+        ui::text((SCREEN_W - (int)p.length() * 12) / 2, ap_ ? 86 : 74, p, ui::c().good);
+        ui::gfx().setTextSize(1);
+        ui::centered(HINT_Y - 14, String(hits_) + " request(s)" +
+                     (savedCount_ ? "   " + String(savedCount_) + " saved" : ""), ui::c().dim);
         ui::hint("` stop sharing");
     }
 
@@ -119,9 +126,15 @@ private:
             return;
         }
 
+        // A short-lived PIN, shown on the device screen. Anyone on the network
+        // can reach this server; only whoever is holding the Cardputer can
+        // read the number off it.
+        pin_ = 100000 + (esp_random() % 900000);
+
         server_ = new WebServer(80);
         server_->on("/", [this]() { handleList(); });
         server_->on("/dl", [this]() { handleDownload(); });
+        server_->on("/setup", [this]() { handleSetup(); });
         server_->onNotFound([this]() { handleList(); });
         server_->begin();
         hits_ = 0;
@@ -135,6 +148,91 @@ private:
         if (ap_) { WiFi.softAPdisconnect(true); WiFi.mode(WIFI_STA); ap_ = false; }
         mode_ = OFF;
         os::invalidate();
+    }
+
+    // Every setting worth typing on a real keyboard rather than 56 tiny keys.
+    struct Field { const char* key; const char* label; bool secret; };
+    static const Field* fields(int& n) {
+        static const Field F[] = {
+            {"k_anthropic", "Claude API key",     true},
+            {"k_openai",    "OpenAI API key",     true},
+            {"k_gemini",    "Gemini API key",     true},
+            {"k_groq",      "Groq API key",       true},
+            {"k_openrtr",   "OpenRouter API key", true},
+            {"ollamahost",  "Ollama host:port",   false},
+            {"host",        "Mac daemon host",    false},
+            {"vault",       "Obsidian subfolder", false},
+        };
+        n = sizeof(F) / sizeof(F[0]);
+        return F;
+    }
+
+    void handleSetup() {
+        hits_++;
+        int n;
+        auto F = fields(n);
+
+        if (server_->method() == HTTP_POST) {
+            if (server_->arg("pin").toInt() != pin_) {
+                server_->send(403, "text/html",
+                              "<meta name=viewport content='width=device-width,initial-scale=1'>"
+                              "<body style='font:16px system-ui;padding:24px'>"
+                              "<h2>Wrong PIN</h2><p>Check the number on the device screen.</p>"
+                              "<a href='/setup'>Back</a>");
+                return;
+            }
+            int saved = 0;
+            for (int i = 0; i < n; i++) {
+                if (!server_->hasArg(F[i].key)) continue;
+                String v = server_->arg(F[i].key);
+                v.trim();
+                if (!v.length()) continue;          // blank means "leave alone"
+                store::setStr(F[i].key, v);
+                saved++;
+            }
+            savedCount_ = saved;
+            os::logf("setup: %d setting(s) written from the browser", saved);
+            os::toast(String(saved) + " setting(s) saved", os::Tone::Good);
+            os::invalidate();
+            server_->send(200, "text/html",
+                          "<meta name=viewport content='width=device-width,initial-scale=1'>"
+                          "<body style='font:16px system-ui;padding:24px;background:#0b0d12;"
+                          "color:#e8ecf4'><h2>Saved " + String(saved) + " setting(s)</h2>"
+                          "<p>They are stored on the device, not on the card.</p>"
+                          "<a style='color:#22d3ee' href='/'>Files</a>");
+            return;
+        }
+
+        String page =
+            "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<title>CardputerOS setup</title><style>"
+            "body{font:16px/1.6 system-ui;margin:0;padding:16px;background:#0b0d12;color:#e8ecf4}"
+            "label{display:block;margin:14px 0 4px;color:#7a8498;font-size:14px}"
+            "input{width:100%;box-sizing:border-box;padding:10px;border-radius:8px;"
+            "border:1px solid #2a3040;background:#151922;color:#e8ecf4;font:15px monospace}"
+            "button{margin-top:20px;padding:12px 20px;border:0;border-radius:8px;"
+            "background:#22d3ee;color:#04121a;font-size:16px;font-weight:600}"
+            "p{color:#7a8498;font-size:14px}a{color:#22d3ee}</style>"
+            "<h2>CardputerOS setup</h2>"
+            "<p>Blank fields are left unchanged. Values are written to the device's "
+            "internal storage, never to the card and never to the repository.</p>"
+            "<form method='POST' action='/setup'>";
+        for (int i = 0; i < n; i++) {
+            String cur = store::getStr(F[i].key, "");
+            String state = cur.length()
+                               ? (F[i].secret ? " &mdash; set (" + String((int)cur.length()) + " chars)"
+                                              : " &mdash; " + htmlEscape(cur))
+                               : "";
+            page += "<label>" + String(F[i].label) + state + "</label>";
+            page += "<input name='" + String(F[i].key) + "' " +
+                    (F[i].secret ? "type='password' " : "") +
+                    "autocomplete='off' autocapitalize='off' spellcheck='false' placeholder='leave blank to keep'>";
+        }
+        page += "<label>PIN shown on the device</label>"
+                "<input name='pin' inputmode='numeric' autocomplete='off'>"
+                "<button type='submit'>Save to device</button></form>"
+                "<p><a href='/'>Browse the card instead</a></p>";
+        server_->send(200, "text/html", page);
     }
 
     void handleList() {
@@ -168,7 +266,7 @@ private:
                                        : String(e.size / 1024) + " KB") + "</small></li>";
             }
         }
-        page += "</ul>";
+        page += "</ul><p><a href='/setup'>Set API keys and hosts</a></p>";
         server_->send(200, "text/html", page);
         os::invalidate();
     }
@@ -197,6 +295,8 @@ private:
     WebServer* server_ = nullptr;
     bool ap_ = false;
     int hits_ = 0;
+    int savedCount_ = 0;
+    long pin_ = 0;
     uint32_t painted_ = 0;
 };
 

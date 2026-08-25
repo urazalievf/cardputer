@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""Provision a CardputerOS device over USB from the command line.
+
+Typing an API key on a 56-key thumb keyboard is miserable, and putting one in
+the repository leaks it permanently. This talks to the device's serial console
+instead, so keys go straight from a gitignored file on your machine into the
+device's internal storage and never touch WiFi, the SD card, or git.
+
+    cardputer info
+    cardputer set k_openai sk-...
+    cardputer get k_openai
+    cardputer keys
+    cardputer wifi "My Network" hunter2
+    cardputer env .env               # push a whole file of KEY=VALUE lines
+    cardputer ls /notes
+    cardputer cat /notes/foo.md
+    cardputer shell                  # interactive
+
+Any other arguments are passed through as a raw command, so `cardputer help`
+asks the device what it supports.
+"""
+from __future__ import annotations
+
+import argparse
+import glob
+import sys
+import time
+
+try:
+    import serial
+except ImportError:
+    sys.exit("pyserial is required:  python3 -m pip install --user pyserial")
+
+DONE = "--done--"
+
+
+def find_port(explicit: str | None) -> str:
+    if explicit:
+        return explicit
+    ports = sorted(glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/ttyACM*"))
+    if not ports:
+        sys.exit("no device found - is it plugged in?")
+    if len(ports) > 1:
+        print(f"note: several ports found, using {ports[0]}", file=sys.stderr)
+    return ports[0]
+
+
+class Device:
+    def __init__(self, port: str):
+        # Opening the port must not reset the board, or the reply is lost in
+        # the reboot. Leave DTR/RTS alone beyond asserting DTR so the CDC
+        # endpoint starts transmitting.
+        self.s = serial.Serial(port, 115200, timeout=0.4)
+        self.s.dtr = True
+        time.sleep(0.35)
+        self.s.reset_input_buffer()
+
+    def send(self, line: str, timeout: float = 8.0) -> str:
+        self.s.write((line + "\n").encode())
+        self.s.flush()
+        out, end = "", time.time() + timeout
+        while time.time() < end:
+            chunk = self.s.read(4096).decode("utf-8", "replace")
+            if chunk:
+                out += chunk
+                if DONE in out:
+                    break
+        # Keep everything except the end marker. The device's own timestamped
+        # log lines are part of what `info` is for, so filtering them out --
+        # which an earlier version did -- silently emptied the most useful
+        # command.
+        lines = [ln for ln in out.splitlines() if ln.strip() and DONE not in ln]
+        return "\n".join(lines)
+
+    def close(self):
+        self.s.close()
+
+
+def push_env(dev: Device, path: str) -> int:
+    """Push KEY=VALUE lines. Blank lines and # comments are ignored."""
+    saved = 0
+    with open(path) as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key, value = key.strip(), value.strip().strip('"').strip("'")
+            if not value:
+                continue
+            print(dev.send(f"set {key} {value}"))
+            saved += 1
+    return saved
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("--port")
+    ap.add_argument("args", nargs=argparse.REMAINDER)
+    ns = ap.parse_args()
+    if not ns.args or ns.args[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+
+    dev = Device(find_port(ns.port))
+    try:
+        verb = ns.args[0]
+        if verb == "env":
+            if len(ns.args) < 2:
+                return print("usage: cardputer env <file>") or 1
+            n = push_env(dev, ns.args[1])
+            print(f"pushed {n} setting(s)")
+        elif verb == "shell":
+            print("connected - 'help' for commands, ctrl+D to leave")
+            while True:
+                try:
+                    line = input("cardputer> ").strip()
+                except EOFError:
+                    print()
+                    break
+                if line in ("exit", "quit"):
+                    break
+                if line:
+                    print(dev.send(line))
+        else:
+            print(dev.send(" ".join(ns.args)))
+    finally:
+        dev.close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

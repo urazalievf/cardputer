@@ -94,6 +94,9 @@ bool toastActive();
 KeyEvent readKey();
 
 void logf(const char* fmt, ...);
+// The USB serial port, so the command console can read and write it without
+// caring which CDC implementation this build uses.
+Stream& consoleStream();
 void bootReport();
 
 }  // namespace os

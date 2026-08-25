@@ -7,6 +7,7 @@
 #include "ai.h"
 #include "audio.h"
 #include "bt.h"
+#include "console.h"
 #include <stdarg.h>
 #include <esp_heap_caps.h>
 
@@ -40,6 +41,8 @@ void logf(const char* fmt, ...) {
     va_end(ap);
     CONSOLE.printf("[%7lu] %s\n", (unsigned long)millis(), buf);
 }
+
+Stream& consoleStream() { return CONSOLE; }
 
 void bootReport() {
     logf("CardputerOS %s", CARDPUTER_OS_VERSION);
@@ -218,6 +221,8 @@ void run() {
     static bool hadToast = false;
     if (hadToast && !toastActive()) { hadToast = false; s_dirty = true; }
     if (toastActive()) hadToast = true;
+
+    console::poll();
 
     App* app = current();
     if (!app) return;

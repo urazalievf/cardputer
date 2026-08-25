@@ -208,11 +208,45 @@ Settings, API keys, WiFi passwords and chat history stay in NVS on the chip —
 they are small, and they should not travel with a card you might hand to
 someone. Without a card, notes fall back to NVS and audio is not kept.
 
-## Secrets
+## Secrets, and how to get them onto the device
 
-This repo is public and holds no credentials. WiFi passwords and API keys are
-typed on the device and live in NVS; the daemon reads its own gitignored
-`config.json`. There is no `secrets.h` to fill in.
+This repo is public and holds no credentials. There is no `secrets.h` to fill
+in, and **nothing should ever be committed** — GitHub's secret scanning revokes
+leaked keys, and git history keeps them forever even after a delete.
+
+Keys live in NVS on the chip. Typing one on 56 keys the size of rice grains is
+miserable, so `tools/cardputer` provisions them over USB from a real keyboard:
+
+```bash
+python3 -m pip install --user pyserial
+
+./tools/cardputer set k_openai sk-...       # one setting
+./tools/cardputer wifi "My Network" hunter2 # a network
+./tools/cardputer keys                      # what is set (secrets shown masked)
+./tools/cardputer info                      # the boot report on demand
+./tools/cardputer shell                     # interactive
+```
+
+Best of all, keep them in a gitignored `.env` and push the lot:
+
+```bash
+cat > .env <<'EOF'
+k_anthropic=sk-ant-...
+k_openai=sk-proj-...
+k_gemini=...
+host=Mac.local
+EOF
+./tools/cardputer env .env
+```
+
+`.env` is gitignored. Values go straight from your machine into the device's
+internal storage — never over WiFi, never onto the SD card, never into git.
+Secrets echo back masked so they do not end up in terminal scrollback.
+
+The same console reaches the card: `ls /notes`, `cat /notes/foo.md`.
+
+If you would rather use a browser, **Share** also serves a setup form at
+`/setup`, guarded by a PIN shown on the device screen.
 
 ## Hardware notes
 

@@ -108,6 +108,24 @@ Worth knowing about:
 - **Find Mac / Test Mac** — Bonjour discovery and a health check
 - **Factory reset** — wipes settings and keys, leaves notes on the card alone
 
+## Provisioning from a computer
+
+`tools/cardputer` talks to a serial console in the firmware, so settings can be
+written from a real keyboard instead of the device's own:
+
+| | |
+|---|---|
+| `set <key> <value>` | write a setting |
+| `get <key>` · `del <key>` | read (secrets masked) / remove |
+| `keys` | every known setting and whether it is set |
+| `wifi <ssid> <pass>` | save a network |
+| `env <file>` | push a whole file of `KEY=VALUE` lines |
+| `ls [dir]` · `cat <path>` | browse the card |
+| `info` · `reboot` · `shell` | |
+
+Physical USB access is the authentication: if someone has the cable they can
+read NVS anyway.
+
 ## WiFi and Bluetooth
 Inside Settings → Connectivity, not on the launcher.
 

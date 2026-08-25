@@ -8,3 +8,7 @@ src/secrets.h
 host/config.json
 *.local.json
 .env
+
+# Local credentials pushed to the device with tools/cardputer env
+.env
+*.env
