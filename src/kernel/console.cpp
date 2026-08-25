@@ -1,4 +1,5 @@
 #include "console.h"
+#include "usbdisk.h"
 #include "store.h"
 #include "net.h"
 #include "theme.h"
@@ -164,6 +165,22 @@ static void dispatch(String line) {
         listDir(rest);
     } else if (cmd == "cat") {
         catFile(rest);
+    } else if (cmd == "usb") {
+        out().printf("available %d  attached %d\n",
+                     (int)usbdisk::available(), (int)usbdisk::attached());
+        out().printf("size      %llu MB (%u sectors)\n",
+                     (unsigned long long)usbdisk::sizeMB(),
+                     (unsigned)usbdisk::sectorCount());
+        out().printf("served    %u read / %u written\n",
+                     (unsigned)usbdisk::readCount(), (unsigned)usbdisk::writeCount());
+        out().printf("failed    %u sectors, last LBA %u\n",
+                     (unsigned)usbdisk::failCount(), (unsigned)usbdisk::lastFailLba());
+        out().printf("calls     %u, max bufsize %u B (%.1f sectors/call)\n",
+                     (unsigned)usbdisk::callCount(), (unsigned)usbdisk::maxBufsize(),
+                     usbdisk::callCount()
+                         ? (double)usbdisk::readCount() / usbdisk::callCount() : 0.0);
+    } else if (cmd == "bpb") {
+        usbdisk::logGeometry();
     } else if (cmd == "reboot") {
         out().println(F("ok rebooting"));
         delay(120);

@@ -18,19 +18,44 @@ eight envelope points so the trace scrolls smoothly. The RGB LED goes red while
 recording, because the screen is not always facing you.
 
 `TAB` record / again · `P` play it back · `S` save as a note · `D` append to
-today's daily note · `C` send to the assistant · `Q` 16kHz / 8kHz
+today's daily note · `C` send to the assistant · `Q` 16kHz / 8kHz ·
+`M` mic check
 
-The audio itself is written to `/recordings/<timestamp>.wav` as soon as
-recording stops -- before transcription, so a failed or unconfigured
-speech-to-text backend never costs you the recording. Saving the transcript as
-a note adds a link back to the wav. Turn it off with Settings > Keep audio.
+The key that starts a recording cannot also stop it: the stop is armed only
+once every key has been released. Without that, the `TAB` still under your
+thumb ends the capture a chunk after it began, and the memo comes back as
+"too short".
 
-Recording length depends on free RAM. The UI canvas is released first to make
-room, which is what buys ~4 seconds on a board with no PSRAM.
+`M` is the diagnostic. It reads 512 samples straight off the microphone with no
+buffer allocated and shows the live level and the running peak, which separates
+the three things that used to look identical: the I2S port refusing to start,
+the port running but hearing nothing, and a recording that was genuinely brief.
+
+The audio goes to `/recordings/<timestamp>.wav`. With a card present it is
+written *as it is captured*, so the length is bounded by the card and a ten
+minute cap rather than by free RAM — the ~4 second ceiling was the largest free
+heap block, and nothing else. The capture buffer is a ring; each completed chunk
+is appended to the open file and its space reused. Transcription then uploads
+straight off the filesystem, because a minute of 16kHz audio is roughly 2MB and
+never fits in memory at once.
+
+Without a card, capture stays in RAM and stops when the ring is full, which is
+the old behaviour. Settings > Keep audio turns the file off entirely and forces
+the RAM path.
+
+Saving the transcript as a note adds a link back to the wav. `P` plays either
+kind back: a RAM recording straight from the buffer, a streamed one off the card
+a block at a time, since it is far too big to load.
 
 ## Ask
 `TAB` is the whole point: record, transcribe and send in one press. History
 persists across reboots and replays the last twelve turns for context.
+
+Dictation here and in Translate goes through `kernel/dictate.cpp`, the same
+streaming capture Voice uses — so neither is capped by free RAM any more. The
+audio goes to a scratch file that is deleted once the transcript is back, unless
+Settings > Keep audio is on, in which case it is renamed into `/recordings`. A
+dictation is a means to a transcript, not a memo.
 
 `TAB` ask out loud · `Enter` send typed · `ctrl+P` switch assistant ·
 `ctrl+D` dictate into the field without sending · `ctrl+L` clear
@@ -44,7 +69,23 @@ design — an agent without a filesystem is not an agent.
 ## Translate
 15 languages. `TAB` speaks, `Enter` translates what you typed.
 
-`TAB` talk · `ctrl+L` change language
+`TAB` talk · `Enter` translate typed text · `ctrl+L` change language ·
+`ctrl+R` script / romanised · `fn`+`;`/`.` scroll
+
+Speaking uses the same streaming capture as Voice, so a long sentence is no
+longer cut off at whatever fitted in RAM.
+
+The built-in glyph set is ASCII, so for most of these languages the reply had
+nowhere to be drawn. The firmware now embeds efont (~311KB), which covers
+Cyrillic, Greek, kana and 6764 CJK ideographs — Russian, Ukrainian, Uzbek,
+Chinese and Japanese render in their own script.
+
+Korean, Arabic and Hindi have no glyphs at this size, so every translation asks
+for a romanisation in the same round trip and falls back to it automatically.
+Whether a reply can be drawn is decided by asking the font for each codepoint,
+not by a table of script ranges, so the answer stays correct if the font is
+ever changed. `ctrl+R` switches between the two by hand — useful even for
+scripts that do render, since reading a phrase aloud is half the point.
 
 ## Tasks
 Stored as a markdown task list, so the file is already what Obsidian wants and
@@ -75,6 +116,14 @@ focus into break and counts rounds.
 open-meteo for the forecast, ip-api for "where am I" — both over plain HTTP, so
 it costs none of the ~45KB a TLS handshake wants. Coordinates are cached, so a
 city that has not moved is not geocoded again.
+
+Conditions are drawn, not just named. WMO codes collapse to nine shapes — clear,
+mostly clear, partly cloudy, overcast, fog, drizzle, rain, snow, storm — built
+from the same primitives as the rest of the icon set, so there are no bitmaps in
+flash, one size parameter serves both the headline and the forecast rows, and
+they recolour with the theme. The headline icon follows `is_day` and shows a
+crescent after dark; forecast rows always use the daytime shape, since a moon on
+a Tuesday would be claiming something the forecast does not say.
 
 `R` refresh · `L` set location · `U` switch °F/°C
 

@@ -35,6 +35,10 @@ struct Spec {
 const Spec& spec(Provider p);
 const char* label(Provider p);
 
+// What to actually do about an unconfigured provider, short enough for one
+// line on a 240px screen. "not configured" on its own has never helped anyone.
+const char* setupHint(Provider p);
+
 struct Msg { String role; String content; };   // role: "user" | "assistant"
 
 struct Result {
@@ -69,6 +73,10 @@ const char* sttLabel(Stt s);
 Stt  preferredStt();
 void setPreferredStt(Stt s);
 bool sttConfigured(Stt s);
+const char* sttSetupHint(Stt s);
 Result transcribe(const int16_t* pcm, size_t samples);
+// Transcribe a WAV already on the card. A streamed recording is far larger than
+// the free heap, so it is uploaded straight off the filesystem.
+Result transcribeFile(const String& path);
 
 }  // namespace ai

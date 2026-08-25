@@ -1,4 +1,5 @@
 #include "hw.h"
+#include <algorithm>
 #include "store.h"
 #include <Wire.h>
 #include <esp32-hal-rgb-led.h>
@@ -11,6 +12,73 @@
 #endif
 
 namespace hw {
+
+// ---------------- battery ----------------
+static Battery  s_batt;
+static int      s_ring[9] = {0};
+static int      s_ringFill = 0, s_ringHead = 0;
+static float    s_ema = -1.0f;
+static int      s_shown = -1;
+static uint32_t s_lastSample = 0;
+static int      s_markPct = -1;
+static uint32_t s_markMs = 0;
+
+const Battery& battery() { return s_batt; }
+
+void batteryTick() {
+    uint32_t now = millis();
+    // One sample per 250ms, spread across ticks rather than taken back to back:
+    // seven reads in a tight loop measure the same instant of noise and the
+    // median of them is no better than one of them.
+    if (s_lastSample && now - s_lastSample < 250) return;
+    s_lastSample = now ? now : 1;
+
+    int raw = M5Cardputer.Power.getBatteryLevel();
+    if (raw < 0) { s_batt.known = false; return; }
+    s_batt.raw = raw;
+
+    s_ring[s_ringHead] = raw;
+    s_ringHead = (s_ringHead + 1) % 9;
+    if (s_ringFill < 9) s_ringFill++;
+
+    int sorted[9];
+    for (int i = 0; i < s_ringFill; i++) sorted[i] = s_ring[i];
+    std::sort(sorted, sorted + s_ringFill);
+    int med = sorted[s_ringFill / 2];
+
+    if (s_ringFill < 3) {
+        // Converge straight to the first readings rather than ramping: starting
+        // the average at zero would show a flat battery for the first seconds of
+        // every boot, and rate-limiting from a bad first sample would take ten
+        // seconds to walk up to the truth.
+        s_ema = med;
+        s_shown = med;
+    } else {
+        s_ema += (med - s_ema) * 0.15f;
+        // From here the display moves at most one point per sample, and only
+        // once the filtered value has clearly crossed -- the dead band is what
+        // stops it flickering between two neighbouring numbers.
+        if      (s_ema > s_shown + 0.75f) s_shown++;
+        else if (s_ema < s_shown - 0.75f) s_shown--;
+    }
+    s_shown = s_shown < 0 ? 0 : s_shown > 100 ? 100 : s_shown;
+
+    s_batt.known = true;
+    s_batt.percent = s_shown;
+
+    // No charge-status line on this board, so infer it from the one thing that
+    // is only true of a charging cell: the level rises. Judged over a minute,
+    // because a single point of drift is not evidence of anything.
+    if (s_markPct < 0) { s_markPct = s_shown; s_markMs = now; }
+    else if (now - s_markMs > 60000) {
+        if      (s_shown > s_markPct) s_batt.charging = true;
+        else if (s_shown < s_markPct) s_batt.charging = false;
+        // Equal: a full cell on a charger holds steady, so keep the verdict.
+        s_markPct = s_shown;
+        s_markMs = now;
+    }
+}
+
 
 static const uint8_t LED_PIN = 21;      // StampS3 onboard WS2812
 static const uint8_t GROVE_SCL = 1;

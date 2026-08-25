@@ -28,6 +28,9 @@ static void check(bool ok, const String& what) {
     else    { s_fail++; os::logf("   FAIL  %s", what.c_str()); }
 }
 
+// Neither a pass nor a fail: a test that could not run on this hardware.
+static void note(const String& what) { os::logf("   SKIP  %s", what.c_str()); }
+
 static void closeTo(double got, double want, const String& what) {
     check(fabs(got - want) < 1e-6, what + "  (got " + String(got, 6) + ")");
 }
@@ -114,6 +117,41 @@ static void testText() {
     check(ui::ellipsize("abc", 10) == "abc", "ellipsize leaves short strings alone");
     check(ui::firstLine("# Title\nbody") == "Title", "firstLine strips markdown heading");
     check(ui::firstLine("") == "(empty)", "firstLine handles empty");
+
+    group("utf-8");
+    // Arduino String is a byte array. Measuring a translation by byte index is
+    // what turned Russian into mojibake, so the decoder gets its own tests.
+    const String ru = "\u043f\u0440\u0438\u0432\u0435\u0442";          // privet, 6 cp / 12 bytes
+    const String jp = "\u3053\u3093\u306b\u3061\u306f";                 // konnichiwa, 5 cp / 15 bytes
+    check(ru.length() == 12 && ui::utf8Len(ru) == 6, "cyrillic counts codepoints, not bytes");
+    check(jp.length() == 15 && ui::utf8Len(jp) == 5, "kana counts codepoints, not bytes");
+    check(ui::utf8Len("plain ascii") == 11, "ascii length is unchanged");
+    check(ui::utf8Sub(ru, 0, 3) == "\u043f\u0440\u0438", "substring cuts on a character boundary");
+    check(ui::utf8Sub(ru, 3, 3) == "\u0432\u0435\u0442", "substring offsets by codepoint");
+
+    int i = 0;
+    check(ui::utf8Decode(ru, i) == 0x043F && i == 2, "decode advances by the encoded width");
+    i = 0;
+    check(ui::utf8Decode("A", i) == 'A' && i == 1, "ascii decodes as itself");
+    // A truncated sequence must yield a replacement char and still advance, or
+    // any caller looping over it hangs.
+    String bad = ru.substring(0, 1);
+    i = 0;
+    check(ui::utf8Decode(bad, i) == 0xFFFD && i > 0, "a truncated sequence terminates");
+
+    group("glyph coverage");
+    check(ui::isAscii("hello") && !ui::isAscii(ru), "ascii detection");
+    check(ui::canRender('A'), "ascii always renders");
+    check(ui::renderable("hello world"), "ascii is renderable");
+    // These are the languages Translate offers; the font either has them or the
+    // app has to fall back to a romanisation, and it must know which.
+    check(ui::canRender(0x043F), "cyrillic renders (Russian, Ukrainian, Uzbek)");
+    check(ui::canRender(0x3053), "hiragana renders (Japanese)");
+    check(ui::canRender(0x4E2D), "CJK renders (Chinese)");
+    check(!ui::canRender(0x0627), "arabic does not - romanisation expected");
+    check(!ui::canRender(0x0939), "devanagari does not - romanisation expected");
+    check(!ui::canRender(0xAC00), "hangul does not - romanisation expected");
+    check(ui::renderable(ru) && ui::renderable(jp), "whole strings resolve");
 }
 
 // -------------------------------------------------------------------- storage
@@ -169,21 +207,72 @@ static void testTheme() {
     // and the geometry it reports is then uninitialised memory. Record what it
     // claims rather than asserting on it -- the format path deliberately goes
     // through SD.begin() instead, which reports failure honestly.
+    group("streaming wav");
+    if (store::sdReady()) {
+        String path = String(store::REC_DIR) + "/selftest.wav";
+        check(store::wavOpen(path), "streaming wav opens");
+        int16_t tone[160];
+        for (int i = 0; i < 160; i++) tone[i] = (int16_t)(i * 200 - 16000);
+        check(store::wavAppend(tone, 160), "first chunk appends");
+        check(store::wavAppend(tone, 160), "second chunk appends");
+        check(store::wavSamples() == 320, "sample count tracks the appends");
+        check(store::wavClose(), "close patches the header");
+        // 44-byte header plus 320 16-bit samples.
+        check(store::exists(path), "the file is on the card");
+        auto entries = store::listDir(store::REC_DIR);
+        size_t size = 0;
+        for (auto& e : entries) if (e.name == "selftest.wav") size = e.size;
+        check(size == 44 + 320 * 2, String("file is ") + (int)size + " bytes, expected 684");
+        store::removeFile(path);
+        check(!store::exists(path), "cleaned up");
+    } else {
+        note("no card - streaming wav tests skipped");
+    }
+
     group("sd hardware");
     {
+        // This probe used to run with the card still mounted, so sdcard_init()
+        // handed back a SECOND slot on the same physical card and the two
+        // fought: sector 0 would not read and the sector count came back
+        // different on every run. That looked like a failing card for months.
+        // It is also the exact path USB mass storage serves the host from, so
+        // getting it right matters beyond the test.
+        store::sdRelease();
+        audio::releaseI2S();
         SPI.begin(40, 39, 14, 12);
         uint8_t pdrv = sdcard_init(12, &SPI, 20000000);
         if (pdrv == 0xFF) {
-            os::logf("   note  sdcard_init: no drive slot");
+            check(false, "sdcard_init: no drive slot");
         } else {
+            check(pdrv == 0, String("raw driver takes slot 0, got ") + pdrv);
+            // The step mass storage was missing: a driver slot is not a live
+            // card, and nothing addresses it until ff_sd_initialize() runs.
+            check(store::sdRawInit(pdrv), "raw block device initialises");
             uint8_t buf[512];
             bool readOk = sd_read_raw(pdrv, buf, 0);
-            os::logf("   note  sdcard_init slot %u, sector 0 read %s, claims %u sectors",
-                     pdrv, readOk ? "OK" : "FAILED", (unsigned)sdcard_num_sectors(pdrv));
+            check(readOk, "sector 0 reads over the raw driver");
+
+            uint32_t sectors = sdcard_num_sectors(pdrv);
+            uint32_t ssize = sdcard_sector_size(pdrv);
+            os::logf("   note  raw geometry: %u sectors of %u bytes (%llu MB)",
+                     (unsigned)sectors, (unsigned)ssize,
+                     (unsigned long long)((uint64_t)sectors * ssize / 1048576ULL));
+            check(ssize == 512, String("sector size is 512, got ") + ssize);
+            // A card that reports a size no SD card has is a driver talking to
+            // nothing; mass storage would hand the host that same lie.
+            check(sectors > 0 && (uint64_t)sectors * ssize < 2048ULL * 1024 * 1024 * 1024,
+                  "sector count is a size a card could actually be");
+            if (readOk) {
+                os::logf("   note  boot signature %02X%02X, first bytes %02X %02X %02X %02X",
+                         buf[510], buf[511], buf[0], buf[1], buf[2], buf[3]);
+                check(buf[510] == 0x55 && buf[511] == 0xAA,
+                      "sector 0 carries an MBR/VBR signature");
+            }
             sdcard_uninit(pdrv);
         }
         SPI.end();
-        check(true, "low-level probe completed without faulting");
+        // Put the filesystem back for whatever runs after this.
+        check(store::sdMount(true), "card remounts after the raw probe");
     }
 
     group("theme");
@@ -261,13 +350,106 @@ static void testNet() {
     check(net::signalBars() >= 0 && net::signalBars() <= 4, "signal bars stay in range");
 }
 
+// -------------------------------------------------------------------- battery
+static void testBattery() {
+    group("battery filter");
+    // Let the ring fill: one sample per 250ms, seeded once three have landed.
+    uint32_t t0 = millis();
+    while (millis() - t0 < 900) { hw::batteryTick(); delay(10); }
+
+    const hw::Battery& b = hw::battery();
+    check(b.known, "battery reads");
+    check(b.percent >= 0 && b.percent <= 100, String("filtered level ") + b.percent + "% in range");
+    check(b.raw >= 0 && b.raw <= 100, "raw sample in range");
+
+    // The whole point: a bare ADC read swings ten points at a stand, so the
+    // displayed value must never move more than one point per 250ms sample.
+    int before = b.percent;
+    uint32_t t1 = millis();
+    while (millis() - t1 < 300) { hw::batteryTick(); delay(10); }
+    check(abs(hw::battery().percent - before) <= 1, "moves at most one point per sample");
+
+    // Repeated ticks inside one sample window must not advance it at all.
+    int held = hw::battery().percent;
+    for (int i = 0; i < 50; i++) hw::batteryTick();
+    check(hw::battery().percent == held, "sampling is rate limited, not per call");
+
+    group("battery colour");
+    const auto& pal = theme::cur();
+    check(ui::batteryColor(0)  == pal.bad, "empty is alarm red");
+    check(ui::batteryColor(19) == pal.bad, "just under a fifth is still red");
+    check(ui::batteryColor(20) != pal.bad, "at a fifth it leaves the alarm colour");
+    // RGB565: red is bits 15-11, green bits 10-5.
+    auto red   = [](uint16_t c) { return (c >> 11) & 0x1F; };
+    auto green = [](uint16_t c) { return (c >> 5) & 0x3F; };
+    uint16_t low = ui::batteryColor(25), mid = ui::batteryColor(60), full = ui::batteryColor(100);
+    check(green(full) >= green(mid) && green(mid) >= green(low), "green rises as it fills");
+    check(red(full) <= red(mid) && red(mid) <= red(low), "red falls as it fills");
+}
+
 // ---------------------------------------------------------------------- audio
 static void testAudio() {
     group("audio");
-    check(audio::micReady(), "microphone initialised");
+    // micReady() used to be Mic.isEnabled(), which only reports that a data pin
+    // is configured -- true on a Cardputer from boot onwards even when the I2S
+    // port never came up. Every capture then failed on the first chunk and the
+    // apps blamed the user for speaking too briefly. Prove the port instead.
+    check(audio::micOn(), "microphone I2S starts");
+    check(M5Cardputer.Mic.isRunning(), "mic capture task is running");
+    check(audio::micReady(), "microphone reports ready");
+
+    {
+        // One real block through the hardware. Silence is fine here -- a bench
+        // is quiet -- but a refused read is not.
+        int16_t probe[512];
+        check(audio::sampleOnce(probe, 512), "a raw block reads back from the mic");
+    }
+
+    // Coming back from a release is the path Voice takes on every recording.
+    audio::releaseI2S();
+    check(!M5Cardputer.Mic.isRunning(), "releaseI2S stops the capture task");
+    check(audio::micOn(), "microphone restarts after a release");
+
     size_t planned = audio::capacitySamples();
     check(planned > audio::sampleRate(), "planned capacity is over one second");
     check(!audio::bufferHeld(), "buffer is not held at rest");
+    check(audio::stopReason() == audio::Stop::None, "no stale stop reason at rest");
+
+    group("continuous capture");
+    // The bug this guards: one queued slot at a time left mic_task blocked on
+    // an empty queue during every repaint, so a quarter of the audio was never
+    // read and Whisper answered the wreckage with "you".
+    if (audio::recordStart()) {
+        check(M5Cardputer.Mic.isRecording() > 0, "a request is in flight before the first chunk");
+        int chunks = 0;
+        bool everStarved = false;
+        uint32_t t0 = millis();
+        while (chunks < 8 && millis() - t0 < 4000) {
+            if (!audio::recordChunk()) break;
+            // This is the moment the old code went deaf: analysis done, caller
+            // about to draw. Something must still be queued.
+            if (M5Cardputer.Mic.isRecording() == 0) everStarved = true;
+            chunks++;
+            delay(25);                      // stand in for a repaint
+        }
+        check(chunks >= 8, String("captured ") + chunks + " chunks");
+        check(!everStarved, "the driver queue never runs dry between chunks");
+        check(audio::recordedSeconds() > 0.7f, "chunks accumulate into a real duration");
+        audio::recordStop();
+        check(audio::recordedSamples() >= (size_t)chunks * (audio::sampleRate() / 10),
+              "in-flight chunks are counted, not discarded");
+        audio::freeBuffer();
+    } else {
+        check(false, String("recordStart failed: ") + audio::startError());
+    }
+
+    group("capture ring");
+    check(audio::pendingChunk(nullptr) == nullptr, "nothing pending once the buffer is freed");
+    if (audio::allocBuffer()) {
+        check(audio::capacitySamples() % (audio::sampleRate() / 10) == 0,
+              "capacity is a whole number of chunks, so the ring cannot straddle");
+        audio::freeBuffer();
+    }
 
     // Must succeed even with the canvas still up: allocation has to size
     // itself against memory that is actually free, not memory it hopes for.
@@ -375,6 +557,7 @@ int run() {
     testTheme();
     testAi();
     testNet();
+    testBattery();
     testAudio();
     testHw();
     testApps();

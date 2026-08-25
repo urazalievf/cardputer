@@ -21,12 +21,50 @@
 
 ## Things that bite
 
-**The SD card and the audio path fight over GPIO40.** This is the big one, and
-it is not obvious from any pinout diagram. `M5Unified.cpp` lists the Cardputer's
-SD clock as GPIO40 — and the same file sets `mic_cfg.pin_bck = GPIO_NUM_40` and
-`spk_cfg.pin_bck = GPIO_NUM_40`. One pin, two peripherals. Because
-`M5Cardputer.begin()` starts the speaker, I2S owns GPIO40 before any SD mount
-runs, and the card silently fails to appear.
+**There is no PMIC, so the battery level is a bare ADC read.** `getBatteryLevel()`
+samples the cell once and scales it `(mV - 3300) * 100 / 800` — one percentage
+point is eight millivolts. WiFi transmit bursts and a charger's switching
+regulator move that rail by tens of millivolts, so an unfiltered reading swings
+ten points while sitting still, worst of all while plugged in. It was also
+recomputed on every status-bar repaint.
+
+`hw::batteryTick()` filters it in three stages: one sample per 250 ms into a
+nine-deep ring, the median of that ring (spikes do not survive a median), an
+exponential average over the medians, and finally a displayed value that moves
+at most one point per sample and only once the average has crossed a dead band.
+The first three samples seed it directly so a boot does not ramp up from zero.
+
+`isCharging()` has no branch for this board and returns `charge_unknown`, so
+charging is inferred from the only thing that is only ever true of a charging
+cell: the level goes up. Judged over a minute, because one point of drift is not
+evidence.
+
+**The microphone and the speaker fight over GPIO43.** Checked against
+M5Unified 0.2.7, `board_M5Cardputer` wires them like this:
+
+| Path | Pins |
+|---|---|
+| Microphone (PDM, I2S_NUM_0) | data `GPIO46`, clock `GPIO43`, no BCK |
+| Speaker (I2S_NUM_1) | BCK `GPIO41`, WS `GPIO43`, DOUT `GPIO42` |
+| SD (SPI) | SCK `GPIO40`, MISO `GPIO39`, MOSI `GPIO14`, CS `GPIO12` |
+
+`GPIO43` is the overlap, and it is between the two audio paths only — which is
+why `audio::micOn()` and `speakerOn()` each end the other, and why exactly one
+of them can be live.
+
+An earlier version of this file claimed the SD clock and the I2S bit clock were
+both `GPIO40`. That is not true of this library version: the mic runs in PDM
+mode with no BCK at all, and the speaker's BCK is `GPIO41`. The SD bus shares no
+pin with either.
+
+The arbitration between them is still in place — `store::sdAcquire()` calls
+`audio::releaseI2S()`, and `audio::micOn()` calls `store::sdRelease()`. It is
+kept deliberately rather than removed on the strength of a pinout read: the
+card works today, the commit that added it was fixing a real mount failure, and
+nobody has re-tested a build without it. It costs an unnecessary unmount on
+every recording, which is worth knowing before anyone tries to save a file
+while the microphone is live. `Voice` writes its WAV after the capture ends,
+for exactly this reason.
 
 `store::sdAcquire()` and `audio::releaseI2S()` arbitrate: every SD entry point
 claims the pin (evicting audio), and `audio::micOn()` / `speakerOn()` call
@@ -50,7 +88,7 @@ half way through.
 
 **Mounting the card costs ~29KB of heap** in driver, FATFS and VFS structures.
 That matters because it comes straight off the maximum recording length. Since
-claiming the microphone unmounts the card anyway (shared GPIO40),
+claiming the microphone unmounts the card anyway (see the arbitration above),
 `audio::recordStart()` releases it *before* allocating the capture buffer, and
 `store` tells `audio` how much a mounted card is holding so the advertised
 capacity reflects what recording will actually get.
@@ -101,10 +139,10 @@ WS2812, driven by the core's own `rgbLedWrite()` — no library needed. It is
 worth using: it is the only output visible when the screen is face-down, which
 is exactly the situation while recording a voice memo.
 
-**USB mass storage does not work yet.** The goal was to mount the SD card in
-Finder over the same cable that powers the device. `kernel/usbdisk.cpp` is
-written and compiles, and `env:cardputer-usbdrive` builds it, but no volume ever
-appears. What is established:
+**USB mass storage works, but only for a card with a small enough FAT.** The
+goal was to mount the SD card in Finder over the same cable that powers the
+device. `kernel/usbdisk.cpp` does that now. What was wrong, and what still
+bounds it:
 
 - Mass storage requires TinyUSB (`ARDUINO_USB_MODE=0`). The hardware CDC/JTAG
   bridge cannot present an MSC interface at all.
@@ -113,13 +151,53 @@ appears. What is established:
   descriptor. Registering MSC in `setup()` is silently too late.
   `ARDUINO_USB_ON_BOOT` is a plain `#define` in `USB.h`, not `#ifndef`-guarded,
   so it cannot be overridden from `build_flags`.
-- Working around that with `ARDUINO_USB_CDC_ON_BOOT=0` plus an explicit
-  `USB.begin()` after registering MSC does produce a composite device
-  (`bDeviceClass 239`, "M5Stack StampS3"), but still no volume — and that
-  build's CDC console is silent, so there is nothing to debug from.
-- In TinyUSB mode esptool cannot reset the board: uploads fail with "No serial
-  data received". A 1200-baud touch reliably drops it back to the ROM
-  bootloader; `tools/usb_touch.py` automates this as a pre-upload action.
+- **The bug that hid everything else:** `sdcard_init()` allocates a driver slot
+  and configures SPI. It does not address the card. Nothing answers CMD0 until
+  `ff_sd_initialize()` runs, and the only thing that ever called it was FATFS,
+  from inside `sdcard_mount()`. So the raw block API — which is what mass
+  storage serves and what `usbdisk::begin()` sized the volume from — reported
+  zero sectors and failed every read. `begin()` bailed with "card reported no
+  geometry", `s_available` stayed false, and no volume could ever appear.
+  `store::sdRawInit()` fixes it. `store::diagnose()` and the selftest's
+  low-level probe had the same bug and had been reporting a dead card for
+  months; the probe additionally ran without unmounting first, so
+  `sdcard_init()` handed back a *second* slot on the same card and the two
+  fought, which is why its sector count differed on every run.
+- With that fixed the host reads the partition table and identifies the volume.
+  The CDC console in this build also came back — its silence was a symptom of
+  MSC failing to register, not a separate problem.
+- `onRead`/`onWrite` ignored TinyUSB's `offset` and served whole sectors from
+  `lba`, which returns the wrong bytes for any split transfer and nothing at all
+  when `bufsize < 512`. They now handle partial sectors, and read-modify-write
+  for partial writes rather than destroying the bytes either side.
+- Contiguous runs go through `ff_sd_read()` with a count, which uses CMD18 and
+  holds the SPI lock for the whole run, instead of a CMD17 per 512 bytes.
+
+**What still bounds it: the ESP32-S3 has no High-Speed USB PHY.** Measured
+throughput serving MSC is ~690 KB/s, and that number does not move — not with
+the SPI clock at 40 MHz instead of 20, not with the radios stood down and the
+display quiesced, not with multi-block reads. It is the Full-Speed bulk ceiling.
+
+A host will not show you one file until it has read the entire FAT, and a FAT is
+four bytes per cluster:
+
+| Volume (32 KB clusters) | FAT size | Read at 690 KB/s |
+|---|---|---|
+| 32 GB | ~4 MB | ~6 s |
+| 64 GB | ~8 MB | ~12 s |
+| 128 GB | ~15 MB | ~22 s |
+| 244 GB | ~29 MB | ~42 s |
+
+macOS gives up at **34.5 seconds**, measured identically across four builds. So
+a 244 GB card formatted FAT32 cannot mount: it gets about 82% of the way through
+its 29 MB FAT and times out, having served ~46,300 sectors with zero read
+errors. Nothing in the firmware can fix that — it is 29 MB over a 12 Mbit link
+against a fixed timeout.
+
+Use a card of 64 GB or less, or give a larger card a smaller FAT32 partition and
+leave the rest unallocated. `console: bpb` prints the card's real geometry and
+`console: usb` the served/failed sector counts, which is how the above was
+established.
 
 Until this is solved, the Share app serves the card over HTTP instead, which
 needs no USB gymnastics and works on any device with a browser.

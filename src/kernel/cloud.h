@@ -16,7 +16,13 @@ struct Result {
 void begin();
 
 String hostBase();
+// Online means reachable AND willing to answer: /ping is deliberately open so
+// the device can find the daemon, so a reachable daemon with the wrong token
+// used to look perfectly configured right up until every real request came
+// back 401. These three keep the two facts apart.
 bool   hostOnline();                 // cached /ping, refreshed every 8s
+bool   hostReachable();              // answered /ping
+bool   hostAuthorised();             // ...and accepted our token
 bool   pingHost(uint32_t timeoutMs = 1500);
 bool   discoverHost();               // mDNS _cardputerd._tcp
 String hostFeatures();               // human-readable summary from /ping
@@ -27,6 +33,8 @@ std::vector<String> hostBackends();
 
 Result hostPost(const String& path, const String& jsonBody, uint32_t timeoutMs = 120000);
 Result hostTranscribe(const int16_t* pcm, size_t samples);
+// Same endpoint, but the WAV is streamed off the card rather than out of RAM.
+Result hostTranscribeFile(const String& path);
 
 // A coding agent with real tools, in a real project directory.
 Result code(const String& prompt, const String& project = "", const String& backend = "");

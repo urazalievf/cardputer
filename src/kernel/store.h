@@ -42,7 +42,24 @@ static const char* K_VAULT       = "vault";      // Obsidian subfolder for devic
 static const char* K_TZ          = "tz";         // POSIX TZ string for NTP
 
 // --- SD card ---
+// Bring the raw block device out of idle. sdcard_init() only allocates a driver
+// slot and configures SPI -- the card itself is never addressed until FATFS
+// calls ff_sd_initialize() from inside sdcard_mount(). Until that happens
+// sdcard_num_sectors() reads back zero and every sd_read_raw() fails, which is
+// exactly why USB mass storage registered a zero-sized volume and no disk ever
+// appeared on the host. Anything serving raw sectors has to do this itself.
+bool sdRawInit(uint8_t pdrv);
+
+// Contiguous raw transfers. sd_read_raw() moves exactly one sector per call,
+// which means a CMD17, an address and a busy-wait for every 512 bytes. The
+// core's underlying ff_sd_read() takes a count and uses CMD18 for a run,
+// holding the SPI lock across the whole thing -- several times faster, and it
+// stops interleaving with the display, which shares SPI2_HOST with the card.
+bool sdRawRead(uint8_t pdrv, uint8_t* buf, uint32_t sector, uint32_t count);
+bool sdRawWrite(uint8_t pdrv, const uint8_t* buf, uint32_t sector, uint32_t count);
+
 bool sdReady();          // a working card was seen, whether or not it's mounted now
+bool sdMounted();        // ...and it is mounted right now
 bool sdMount(bool force = false);     // safe to call repeatedly
 bool sdAcquire(bool force = false);  // claim GPIO40 from audio; every SD op calls this
 void sdRelease();        // unmount so audio can have GPIO40 back
@@ -76,5 +93,22 @@ String newNoteName(const String& title);         // 2026-08-24-1432-title.md
 // the microphone has let go of GPIO40, so the card can be mounted again.
 bool   writeWav(const String& path, const int16_t* pcm, size_t samples);
 String newRecordingName();                       // 20260824-143210.wav
+
+// Streaming WAV: open once, append each chunk as it is captured, patch the
+// header on close. A memo is then bounded by the card and by patience rather
+// than by the ~140KB largest free block, which is what held it to four seconds.
+bool   wavOpen(const String& path);
+bool   wavAppend(const int16_t* pcm, size_t samples);
+bool   wavClose();                               // patches RIFF/data sizes
+void   wavAbort();                               // close and delete
+bool   wavOpenNow();
+size_t wavSamples();
+
+// Whether this board actually needs audio evicted before the card will mount.
+// The Cardputer's SD bus (SCK 40, MISO 39, MOSI 14, CS 12) shares no pin with
+// the microphone (PDM: data 46, clock 43) or the speaker (41/43/42), so they
+// should coexist -- but the card is not worth gambling on a pinout read, so
+// sdAcquire() tries coexisting first and latches this if the board disagrees.
+bool   audioConflicts();
 
 }  // namespace store

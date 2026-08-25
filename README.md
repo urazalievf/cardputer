@@ -32,14 +32,14 @@ a pocket.
 | | |
 |---|---|
 | **Notes** | Markdown on the SD card — real `.md` files, so the card drops into an Obsidian vault. `S` pushes one over WiFi, `A` asks your assistant about the note you're reading, `O` cycles sort order. |
-| **Voice** | `TAB` records with a live scrolling waveform, then transcribes. The audio is written to `/recordings/*.wav` on the card and the note links back to it. `P` plays it back, `Q` switches quality. |
+| **Voice** | `TAB` records with a live scrolling waveform, then transcribes. The audio is written to `/recordings/*.wav` on the card and the note links back to it. `P` plays it back, `Q` switches quality, `M` runs a mic check. |
 | **Ask** | Conversation with persistent history. `TAB` asks out loud — record, transcribe and send in one press. `ctrl+P` switches vendor mid-thread. |
 | **Code** | A coding agent — `claude`, `codex` or `gemini` CLI — with tools, in a project directory on your Mac. |
-| **Translate** | `TAB`, speak, get it back in any of 15 languages. |
+| **Translate** | `TAB`, speak, get it back in any of 15 languages — in its own script where a glyph exists (Cyrillic, kana, Chinese), romanised where none does (Korean, Arabic, Hindi). `ctrl+R` toggles. |
 | **Tasks** | A checklist stored as a markdown task list, which is already the format Obsidian wants. `S` syncs it. |
 | **Calc** | A real expression parser: `12*(3+4)/2`, `sqrt`, `sin`, `ln`, `ans`, `pi`, deg/rad. Results chain, so `4+5` then `/2` gives 4.5. |
 | **Timer** | Stopwatch, countdown and pomodoro, with an audible finish. |
-| **Weather** | Current conditions and three days, over plain HTTP with no API key. Finds you by IP, or name a city. |
+| **Weather** | Current conditions and three days, with drawn sky icons (sun, cloud, rain, snow, storm, fog — and a crescent after dark). Plain HTTP, no API key. Finds you by IP, or name a city. |
 | **Remote** | Universal IR remote — Samsung, LG/NEC and Sony code sets, or type a raw address/command. |
 | **Share** | Serves the SD card over HTTP so a phone or laptop can pull notes off it. Hosts its own hotspot when there's no network to join. This is how you get files off the device — USB mass storage is [not working yet](docs/hardware.md). |
 | **Files** | SD browser: create folders and files, edit text in place, rename, sort, and move things with cut/paste. |
@@ -269,19 +269,34 @@ If you would rather use a browser, **Share** also serves a setup form at
 
 ## Hardware notes
 
-No PSRAM, so RAM is the real constraint. The audio buffer is allocated only
-while recording and the UI canvas is released to make room, which is what buys
-a ~4&nbsp;second memo on a board with ~141&nbsp;KB free. BLE is started only
-while the Bluetooth app is open.
+No PSRAM, so RAM is the real constraint — but it no longer caps a recording.
+The capture buffer is a ring, drained to `/recordings/*.wav` as it fills, so a
+memo runs to a ten minute cap instead of the ~4&nbsp;seconds that fitted in the
+largest free heap block, and the upload streams off the card. Without a card it
+falls back to filling the ring once. The UI canvas is still released to make
+room, and BLE is started only while the Bluetooth app is open.
 
 Three Cardputer traps are documented in [docs/hardware.md](docs/hardware.md):
-the SD clock and the I2S bit clock are **the same pin (GPIO40)**; the SD card
-must be **FAT32** (exFAT enumerates fine and then fails to mount); and masking
-interrupts across an IR frame will hang the device outright.
+the microphone and the speaker share **GPIO43**, so only one can be live; the SD
+card must be **FAT32** (exFAT enumerates fine and then fails to mount); and
+masking interrupts across an IR frame will hang the device outright.
+
+The status bar draws the battery as a gauge rather than a number: a shell, a
+terminal nub, and a fill that runs from alarm red below a fifth through amber to
+green at full, with a bolt beside it while charging. The exact figure, filtered
+and raw side by side, is in Settings > Battery.
+
+A fourth is worth naming here because it cost the microphone entirely:
+`Mic.isEnabled()` reports whether a data pin is *configured*, not whether the
+capture task is *running*. It is true on a Cardputer from `M5.begin()` onward
+even when the I2S port never came up, so a dead microphone passed every check
+and every recording came back empty. `audio::micReady()` asks
+`Mic.isRunning()` instead.
 
 ## Status
 
 v0.2 — thirteen apps, seven AI providers, editable themes, BLE, IR, Grove I2C.
-Builds at **56.6% flash, 19.5% RAM**, zero warnings, 201/201 self-tests passing.
+Builds at **67.2% flash, 19.8% RAM**, zero warnings. The jump from 56.6% is the
+embedded efont that lets Translate draw non-Latin scripts.
 
 MIT.

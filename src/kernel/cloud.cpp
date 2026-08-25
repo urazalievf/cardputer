@@ -6,10 +6,13 @@
 #include <HTTPClient.h>
 #include <ESPmDNS.h>
 #include <ArduinoJson.h>
+#include <SD.h>
 
 namespace cloud {
 
 static bool     s_online = false;
+static bool     s_reachable = false;
+static bool     s_authorised = false;
 static uint32_t s_lastPing = 0;
 static String   s_features = "";
 static std::vector<String> s_backends;
@@ -23,6 +26,8 @@ String hostBase() {
 }
 
 bool pingHost(uint32_t timeoutMs) {
+    s_reachable = false;
+    s_authorised = false;
     if (!net::connected()) return false;
     String base = hostBase();
     if (!base.length()) return false;
@@ -30,8 +35,14 @@ bool pingHost(uint32_t timeoutMs) {
     http.setConnectTimeout(timeoutMs);
     http.setTimeout(timeoutMs);
     if (!http.begin(base + "/ping")) return false;
+    // Sent even though /ping does not require it: the daemon echoes back
+    // whether it recognised us, which is the only cheap way to find out that
+    // the token is wrong before a real request fails.
+    String token = store::getStr("hosttoken", "");
+    if (token.length()) http.addHeader("Authorization", "Bearer " + token);
     int code = http.GET();
     if (code == 200) {
+        s_reachable = true;
         JsonDocument d;
         if (!deserializeJson(d, http.getString())) {
             s_backends.clear();
@@ -41,18 +52,34 @@ bool pingHost(uint32_t timeoutMs) {
                          (d["claude"].as<bool>() ? " claude" : "") +
                          (d["vault"].as<bool>()  ? " vault"  : "") +
                          " stt:" + d["stt"].as<String>();
+            // Daemons that predate the field do not report it; assume the best
+            // rather than declaring a working setup broken.
+            s_authorised = d["authorised"].is<bool>() ? d["authorised"].as<bool>() : true;
+            if (!s_authorised) s_features += " (token rejected)";
+        } else {
+            s_authorised = true;      // answered, but not in JSON we understand
         }
     }
     http.end();
+    // Direct callers (Settings > Test Mac) refresh the cache too, so the very
+    // next hostOnline() does not fire a second round trip for the same answer.
+    s_lastPing = millis();
+    s_online = (code == 200) && s_authorised;
     return code == 200;
 }
+
+bool hostReachable() { hostOnline(); return s_reachable; }
+bool hostAuthorised() { hostOnline(); return s_authorised; }
 
 bool hostOnline() {
     if (millis() - s_lastPing > 8000) {
         s_lastPing = millis();
         s_online = pingHost();
     }
-    return s_online;
+    // A daemon that will not accept our token cannot answer a single useful
+    // request, so counting it as a configured provider only means the fallback
+    // chain never runs and the user sees 401 instead of the next provider.
+    return s_online && s_authorised;
 }
 
 String hostFeatures() { return s_features; }
@@ -105,18 +132,32 @@ Result hostPost(const String& path, const String& body, uint32_t timeoutMs) {
     return r;
 }
 
-Result hostTranscribe(const int16_t* pcm, size_t samples) {
+static Result hostTranscribeSrc(const int16_t* pcm, size_t samples, const String& path) {
     Result r;
     String host = store::getStr(store::K_HOST, "");
     if (!host.length()) { r.error = "no host"; return r; }
     int port = store::getInt(store::K_HOST_PORT, 8787);
+
+    File f;
+    size_t fileBytes = 0;
+    if (path.length()) {
+        if (!store::sdAcquire()) { r.error = "no card"; return r; }
+        f = SD.open(path, FILE_READ);
+        if (!f) { r.error = "cannot read " + path; return r; }
+        fileBytes = f.size();
+        if (fileBytes <= 44) { f.close(); r.error = "recording is empty"; return r; }
+    }
 
     size_t pcmBytes = samples * sizeof(int16_t);
     uint8_t hdr[44];
     audio::wavHeader(hdr, pcmBytes);
 
     WiFiClient client;
-    if (!client.connect(host.c_str(), port, 4000)) { r.error = "host unreachable"; return r; }
+    if (!client.connect(host.c_str(), port, 4000)) {
+        if (f) f.close();
+        r.error = "host unreachable";
+        return r;
+    }
 
     client.printf("POST /transcribe HTTP/1.1\r\nHost: %s\r\n", host.c_str());
     String token = store::getStr("hosttoken", "");
@@ -126,16 +167,40 @@ Result hostTranscribe(const int16_t* pcm, size_t samples) {
         client.print("\r\n");
     }
     client.print("Content-Type: audio/wav\r\n");
-    client.printf("Content-Length: %u\r\nConnection: close\r\n\r\n", (unsigned)(44 + pcmBytes));
-    client.write(hdr, 44);
+    size_t bodyLen = path.length() ? fileBytes : 44 + pcmBytes;
+    client.printf("Content-Length: %u\r\nConnection: close\r\n\r\n", (unsigned)bodyLen);
 
-    const uint8_t* p = (const uint8_t*)pcm;
-    size_t off = 0;
-    while (off < pcmBytes) {
-        size_t n = min((size_t)2048, pcmBytes - off);
-        size_t w = client.write(p + off, n);
-        if (!w) { client.stop(); r.error = "upload failed"; return r; }
-        off += w;
+    if (path.length()) {
+        // Heap, not .bss: this lives only for the upload, and a permanent
+        // buffer is permanently unavailable to the capture ring.
+        uint8_t* io = (uint8_t*)malloc(2048);
+        if (!io) { f.close(); client.stop(); r.error = "no room to upload"; return r; }
+        size_t sent = 0;
+        while (sent < fileBytes) {
+            int got = f.read(io, 2048);
+            if (got <= 0) break;
+            if (sent + got > fileBytes) got = fileBytes - sent;
+            int off = 0;
+            while (off < got) {
+                size_t w = client.write(io + off, got - off);
+                if (!w) { free(io); f.close(); client.stop(); r.error = "upload failed"; return r; }
+                off += w;
+            }
+            sent += got;
+        }
+        free(io);
+        f.close();
+        if (sent != fileBytes) { client.stop(); r.error = "short read from card"; return r; }
+    } else {
+        client.write(hdr, 44);
+        const uint8_t* p = (const uint8_t*)pcm;
+        size_t off = 0;
+        while (off < pcmBytes) {
+            size_t n = min((size_t)2048, pcmBytes - off);
+            size_t w = client.write(p + off, n);
+            if (!w) { client.stop(); r.error = "upload failed"; return r; }
+            off += w;
+        }
     }
 
     uint32_t start = millis();
@@ -166,6 +231,14 @@ Result hostTranscribe(const int16_t* pcm, size_t samples) {
     r.text = payload;
     if (!r.ok) r.error = "empty transcript";
     return r;
+}
+
+Result hostTranscribe(const int16_t* pcm, size_t samples) {
+    return hostTranscribeSrc(pcm, samples, String());
+}
+
+Result hostTranscribeFile(const String& path) {
+    return hostTranscribeSrc(nullptr, 0, path);
 }
 
 Result code(const String& prompt, const String& project, const String& backend) {

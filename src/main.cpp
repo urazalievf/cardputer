@@ -84,6 +84,16 @@ void setup() {
 }
 
 void loop() {
+    // While the host owns the card this device is a disk, not a user interface.
+    // Serving mass storage is throughput-bound over a Full-Speed link, and a
+    // host will not show you a single file until it has read the entire FAT, so
+    // give the USB task the CPU and stop repainting a screen nobody is looking
+    // at -- the display shares SPI2_HOST with the card it is trying to read.
+    if (usbdisk::attached()) {
+        os::runQuiet();
+        delay(2);
+        return;
+    }
     os::run();
     delay(12);
 }

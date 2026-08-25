@@ -8,6 +8,8 @@
 #include "audio.h"
 #include "bt.h"
 #include "console.h"
+#include "hw.h"
+#include "usbdisk.h"
 #include <stdarg.h>
 #include <esp_heap_caps.h>
 
@@ -62,6 +64,12 @@ void bootReport() {
         logf("sd       NOT MOUNTED - probing to find out why:");
         store::diagnose();
     }
+    logf("usbdisk  %s", usbdisk::available()
+             ? (String(usbdisk::attached() ? "attached, " : "ready, ") +
+                String((unsigned long long)usbdisk::sizeMB()) + " MB").c_str()
+             : "unavailable");
+    logf("battery  %d%% (raw %d)%s", hw::battery().percent, hw::battery().raw,
+         hw::battery().charging ? ", charging" : "");
     logf("wifi     %d saved network(s)", (int)net::savedNetworks().size());
     logf("theme    %s, accent hue %d", theme::presetName(theme::preset()), theme::accentHue());
     logf("ai       default %s, %d provider(s) configured",
@@ -209,10 +217,46 @@ static bool handleGlobal(const KeyEvent& k) {
     return false;
 }
 
+void runQuiet() {
+    // Keys and the console, so the device stays drivable and debuggable; no
+    // drawing, no radios, no battery ADC.
+    M5Cardputer.update();
+    console::poll();
+    App* app = current();
+    if (!app) return;
+    if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
+        KeyEvent k = readKey();
+        if (!handleGlobal(k)) {
+            if (k.esc) back();
+            else app->onKey(k);
+        }
+        s_dirty = true;
+    }
+    // One frame when something actually changed, and none otherwise. A static
+    // screen costs the card nothing; a screen repainting on a timer competes
+    // for the same SPI host the host is trying to read through.
+    if (consumeDirty()) {
+        ui::beginFrame();
+        app->draw();
+        ui::statusBar(app->title(), app->icon(), app->accent());
+        ui::endFrame();
+    }
+}
+
 void run() {
     M5Cardputer.update();
     net::tick();
     bt::tick();
+    hw::batteryTick();
+
+    // Drawing is lazy, so the gauge would otherwise hold whatever value it had
+    // when something else last invalidated. The filter only lets it move a
+    // point at a time, so this is at most one repaint every few seconds.
+    static int lastBatt = -1;
+    if (hw::battery().known && hw::battery().percent != lastBatt) {
+        lastBatt = hw::battery().percent;
+        s_dirty = true;
+    }
 
     static bool reported = false;
     if (CONSOLE && !reported)      { reported = true;  bootReport(); }
