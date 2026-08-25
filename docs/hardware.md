@@ -21,12 +21,32 @@
 
 ## Things that bite
 
-**The SD card and the audio path fight over GPIO40.** This is the big one, and
-it is not obvious from any pinout diagram. `M5Unified.cpp` lists the Cardputer's
-SD clock as GPIO40 — and the same file sets `mic_cfg.pin_bck = GPIO_NUM_40` and
-`spk_cfg.pin_bck = GPIO_NUM_40`. One pin, two peripherals. Because
-`M5Cardputer.begin()` starts the speaker, I2S owns GPIO40 before any SD mount
-runs, and the card silently fails to appear.
+**The microphone and the speaker fight over GPIO43.** Checked against
+M5Unified 0.2.7, `board_M5Cardputer` wires them like this:
+
+| Path | Pins |
+|---|---|
+| Microphone (PDM, I2S_NUM_0) | data `GPIO46`, clock `GPIO43`, no BCK |
+| Speaker (I2S_NUM_1) | BCK `GPIO41`, WS `GPIO43`, DOUT `GPIO42` |
+| SD (SPI) | SCK `GPIO40`, MISO `GPIO39`, MOSI `GPIO14`, CS `GPIO12` |
+
+`GPIO43` is the overlap, and it is between the two audio paths only — which is
+why `audio::micOn()` and `speakerOn()` each end the other, and why exactly one
+of them can be live.
+
+An earlier version of this file claimed the SD clock and the I2S bit clock were
+both `GPIO40`. That is not true of this library version: the mic runs in PDM
+mode with no BCK at all, and the speaker's BCK is `GPIO41`. The SD bus shares no
+pin with either.
+
+The arbitration between them is still in place — `store::sdAcquire()` calls
+`audio::releaseI2S()`, and `audio::micOn()` calls `store::sdRelease()`. It is
+kept deliberately rather than removed on the strength of a pinout read: the
+card works today, the commit that added it was fixing a real mount failure, and
+nobody has re-tested a build without it. It costs an unnecessary unmount on
+every recording, which is worth knowing before anyone tries to save a file
+while the microphone is live. `Voice` writes its WAV after the capture ends,
+for exactly this reason.
 
 `store::sdAcquire()` and `audio::releaseI2S()` arbitrate: every SD entry point
 claims the pin (evicting audio), and `audio::micOn()` / `speakerOn()` call
@@ -50,7 +70,7 @@ half way through.
 
 **Mounting the card costs ~29KB of heap** in driver, FATFS and VFS structures.
 That matters because it comes straight off the maximum recording length. Since
-claiming the microphone unmounts the card anyway (shared GPIO40),
+claiming the microphone unmounts the card anyway (see the arbitration above),
 `audio::recordStart()` releases it *before* allocating the capture buffer, and
 `store` tells `audio` how much a mounted card is holding so the advertised
 capacity reflects what recording will actually get.

@@ -35,6 +35,19 @@ const Spec& spec(Provider p) {
 }
 const char* label(Provider p) { return spec(p).label; }
 
+const char* setupHint(Provider p) {
+    switch (p) {
+        case Provider::Host:
+            // Reachable but refusing us means the shared secret is missing:
+            // the daemon prints it at startup and it has to be pushed over USB.
+            return cloud::hostReachable() && !cloud::hostAuthorised()
+                 ? "daemon needs its token - Settings > Mac"
+                 : "start cardputerd, then Settings > Find Mac";
+        case Provider::Ollama: return "set the Ollama host in Settings";
+        default:               return "add an API key in Settings > AI";
+    }
+}
+
 void begin() {}
 
 Provider preferred() {
@@ -337,6 +350,18 @@ const char* sttLabel(Stt s) {
         case Stt::OpenAI: return "OpenAI Whisper";
         case Stt::Groq:   return "Groq Whisper";
         default:          return "?";
+    }
+}
+
+const char* sttSetupHint(Stt s) {
+    switch (s) {
+        case Stt::Host:
+            return cloud::hostReachable() && !cloud::hostAuthorised()
+                 ? "daemon needs its token - Settings > Mac"
+                 : "start cardputerd, then Settings > Find Mac";
+        case Stt::OpenAI: return "add an OpenAI key in Settings > AI";
+        case Stt::Groq:   return "add a Groq key in Settings > AI";
+        default:          return "pick an engine in Settings";
     }
 }
 

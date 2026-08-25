@@ -74,7 +74,9 @@ void textBg(int x, int y, const String& s, uint16_t color, uint16_t bg) {
     g.print(s);
 }
 
-int textW(const String& s) { return (int)s.length() * glyphW(); }
+// Counted in characters, not bytes: a transcript with an accent in it would
+// otherwise measure wider than it draws and centre itself off to the left.
+int textW(const String& s) { return utf8Len(s) * glyphW(); }
 
 void centered(int y, const String& s, uint16_t color) {
     int x = (SCREEN_W - textW(s)) / 2;
@@ -265,6 +267,156 @@ void hint(const String& t) {
     g.setTextSize(theme::bigText() ? 2 : 1);
 }
 
+// ---------------- unicode ----------------
+// efontCN_16: ~311KB of flash for Cyrillic (66 glyphs), Greek (48), hiragana
+// and katakana (170) and 6764 CJK ideographs, on top of ASCII. That covers
+// every language Translate offers except Korean, Arabic and Hindi, which fall
+// back to a romanisation -- see renderable().
+static const lgfx::IFont* unicodeFont() { return &lgfx::fonts::efontCN_16; }
+
+UnicodeScope::UnicodeScope() : prev_(gfx().getFont()), active_(true) {
+    auto& g = gfx();
+    g.setFont(unicodeFont());
+    g.setTextSize(1);              // the efont is already 16px tall
+}
+
+UnicodeScope::~UnicodeScope() {
+    if (!active_) return;
+    auto& g = gfx();
+    g.setFont((const lgfx::IFont*)prev_);
+    g.setTextSize(theme::bigText() ? 2 : 1);
+}
+
+bool canRender(uint32_t cp) {
+    if (cp < 0x80) return true;                  // the default font has ASCII
+    if (cp > 0xFFFF) return false;               // efont is BMP only
+    lgfx::FontMetrics fm;
+    const lgfx::IFont* f = unicodeFont();
+    f->getDefaultMetric(&fm);
+    return f->updateFontMetric(&fm, (uint16_t)cp);
+}
+
+bool isAscii(const String& utf8) {
+    for (size_t i = 0; i < utf8.length(); i++)
+        if ((uint8_t)utf8[i] >= 0x80) return false;
+    return true;
+}
+
+bool renderable(const String& utf8) {
+    int i = 0;
+    while (i < (int)utf8.length()) {
+        uint32_t cp = utf8Decode(utf8, i);
+        // Whitespace and the replacement character are never the reason to
+        // give up on a whole translation.
+        if (cp == '\n' || cp == '\r' || cp == '\t' || cp == 0xFFFD) continue;
+        if (!canRender(cp)) return false;
+    }
+    return true;
+}
+
+uint32_t utf8Decode(const String& s, int& i) {
+    const int n = s.length();
+    if (i < 0 || i >= n) { i = n; return 0; }
+    uint8_t c = (uint8_t)s[i];
+    if (c < 0x80) { i += 1; return c; }
+
+    int extra;
+    uint32_t cp;
+    if      ((c & 0xE0) == 0xC0) { extra = 1; cp = c & 0x1F; }
+    else if ((c & 0xF0) == 0xE0) { extra = 2; cp = c & 0x0F; }
+    else if ((c & 0xF8) == 0xF0) { extra = 3; cp = c & 0x07; }
+    else { i += 1; return 0xFFFD; }              // stray continuation byte
+
+    if (i + extra >= n) { i = n; return 0xFFFD; }
+    for (int k = 1; k <= extra; k++) {
+        uint8_t cc = (uint8_t)s[i + k];
+        if ((cc & 0xC0) != 0x80) { i += 1; return 0xFFFD; }   // truncated
+        cp = (cp << 6) | (cc & 0x3F);
+    }
+    i += extra + 1;
+    return cp;
+}
+
+int utf8Len(const String& s) {
+    int i = 0, n = 0;
+    while (i < (int)s.length()) { utf8Decode(s, i); n++; }
+    return n;
+}
+
+String utf8Sub(const String& s, int fromCp, int cpCount) {
+    int i = 0, cp = 0;
+    while (i < (int)s.length() && cp < fromCp) { utf8Decode(s, i); cp++; }
+    int start = i;
+    int taken = 0;
+    while (i < (int)s.length() && taken < cpCount) { utf8Decode(s, i); taken++; }
+    return s.substring(start, i);
+}
+
+// Proportional fonts cannot be wrapped by counting characters. Measure with
+// whatever font is active -- callers wrap this in a UnicodeScope.
+std::vector<String> wrapPx(const String& src, int maxPx) {
+    std::vector<String> out;
+    auto& g = gfx();
+    int i = 0;
+    const int n = src.length();
+    int lineStart = 0, lastBreak = -1, width = 0;
+
+    while (i < n) {
+        int charStart = i;
+        uint32_t cp = utf8Decode(src, i);
+        if (cp == '\n') {
+            out.push_back(src.substring(lineStart, charStart));
+            lineStart = i; lastBreak = -1; width = 0;
+            continue;
+        }
+        if (cp == '\r') continue;
+
+        int w = g.textWidth(src.substring(charStart, i).c_str());
+        // CJK has no spaces, so every character is also a legal break point.
+        bool breakable = (cp == ' ') || (cp >= 0x2E80);
+        if (width + w > maxPx && charStart > lineStart) {
+            int cut = (lastBreak > lineStart) ? lastBreak : charStart;
+            out.push_back(src.substring(lineStart, cut));
+            // Drop the space we broke on; keep a CJK character.
+            lineStart = (cut < n && src[cut] == ' ') ? cut + 1 : cut;
+            lastBreak = -1;
+            width = 0;
+            // Rescan from the new line's start, not from the character that
+            // overflowed: breaking at an earlier space leaves everything
+            // between it and here unmeasured, and the next line then runs off
+            // the panel. lineStart always advances, so this terminates.
+            i = lineStart;
+            continue;
+        }
+        width += w;
+        if (breakable) lastBreak = (cp == ' ') ? charStart : i;
+    }
+    if (lineStart < n || out.empty()) out.push_back(src.substring(lineStart));
+    return out;
+}
+
+int unicodePager(const String& body, int scroll, uint16_t color,
+                 int rows, int y0, int lineH) {
+    UnicodeScope u;
+    auto lines = wrapPx(body, SCREEN_W - 8);
+    if (scroll > (int)lines.size() - 1) scroll = max(0, (int)lines.size() - 1);
+    if (scroll < 0) scroll = 0;
+    auto& g = gfx();
+    g.setTextColor(color);
+    for (int r = 0; r < rows && scroll + r < (int)lines.size(); r++) {
+        g.setCursor(3, y0 + r * lineH);
+        g.print(lines[scroll + r].c_str());
+    }
+    if ((int)lines.size() > rows) {
+        int trackH = rows * lineH;
+        int barH = max(6, trackH * rows / (int)lines.size());
+        int span = (int)lines.size() - rows;
+        int barY = y0 - 1 + (span > 0 ? (trackH - barH) * scroll / span : 0);
+        g.fillRoundRect(SCREEN_W - 3, barY, 3, barH, 1, c().accent);
+    }
+    return (int)lines.size();
+}
+
 // ---------------- text ----------------
 std::vector<String> wrap(const String& src, int maxChars) {
     if (maxChars < 0) maxChars = theme::charsPerLine();
@@ -290,8 +442,12 @@ std::vector<String> wrap(const String& src, int maxChars) {
 }
 
 String ellipsize(const String& s, int maxChars) {
-    if (maxChars <= 1 || (int)s.length() <= maxChars) return s;
-    return s.substring(0, maxChars - 1) + "~";
+    if (maxChars <= 1) return s;
+    // substring() on a byte index cuts multi-byte characters in half and turns
+    // the tail of a transcript into mojibake.
+    int len = utf8Len(s);
+    if (len <= maxChars) return s;
+    return utf8Sub(s, 0, maxChars - 1) + "~";
 }
 
 String firstLine(const String& src, int maxChars) {

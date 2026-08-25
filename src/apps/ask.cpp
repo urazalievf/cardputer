@@ -99,35 +99,48 @@ private:
     }
 
     bool dictate() {
-        if (!audio::micReady()) { os::toast("no mic", os::Tone::Bad); return false; }
+        if (!audio::micReady()) {
+            os::toast("microphone unavailable - see Voice > M", os::Tone::Bad);
+            return false;
+        }
         ui::releaseCanvas();
         audio::setSampleRate(store::getInt("micrate", 16000));
         audio::setHeadroomBytes(ai::preferredStt() != ai::Stt::Host ? 72 * 1024 : 40 * 1024);
         if (theme::sounds()) audio::chirpOk();
-        audio::recordStart();
-        if (!audio::recording()) {
-            os::toast("not enough memory to record", os::Tone::Bad);
+        if (!audio::recordStart()) {
+            os::toast(audio::startError(), os::Tone::Bad);
             ui::acquireCanvas();
             return false;
         }
+        // The key that started dictation is still down; arm the stop only once
+        // it has been released, or the capture ends one chunk in.
+        bool armed = false;
         while (audio::recordChunk()) {
             ui::beginFrame();
             ui::centered(34, "Listening", ui::c().bad);
             ui::progress(20, 52, SCREEN_W - 40, 12, audio::level(), ui::c().good);
-            ui::centered(76, String(audio::recordedSeconds(), 1) + "s  -  any key stops",
+            ui::centered(76, String(audio::recordedSeconds(), 1) + "s  -  " +
+                             (armed ? "any key stops" : "let go to arm stop"),
                          ui::c().dim);
             ui::centered(92, ai::sttLabel(ai::preferredStt()), ui::c().dim);
             ui::statusBar("Dictating", ui::Icon::Mic);
             ui::endFrame();
             M5Cardputer.update();
-            if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) break;
+            bool down = M5Cardputer.Keyboard.isPressed();
+            if (!armed && !down) { armed = true; continue; }
+            if (armed && down) break;
         }
         audio::recordStop();
         size_t n = audio::recordedSamples();
         if (n < audio::sampleRate() / 2) {
+            float secs = (float)n / audio::sampleRate();
+            String why = audio::stopReason() == audio::Stop::MicFailed
+                       ? "microphone stopped after " + String(secs, 1) + "s"
+                       : n == 0 ? String("captured nothing - try Voice > M")
+                                : "too short - " + String(secs, 1) + "s";
             audio::freeBuffer();
             ui::acquireCanvas();
-            os::toast("too short", os::Tone::Bad);
+            os::toast(why, os::Tone::Bad);
             os::invalidate();
             return false;
         }

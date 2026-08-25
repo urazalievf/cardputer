@@ -118,6 +118,10 @@ private:
             {STR,    "Mac host",    "host"},
             {SLIDER, "Mac port",    "hostport", 1, 65535, 1, "8787"},
             {ACTION, "Find Mac",    "a_discover"},
+            // The daemon mints a shared secret on first run and refuses every
+            // request without it. Until now it could only be set over USB,
+            // which left "daemon found, nothing works" with no on-device fix.
+            {SECRET, "Mac token",   "hosttoken"},
             {ACTION, "Test Mac",    "a_ping"},
             {STR,    "Bluetooth name","btname",  0,0,1, "CardputerOS"},
             {ACTION, "Forget WiFi", "a_wipewifi"},
@@ -234,7 +238,7 @@ private:
 
     static int defaultToggle(const char* key) {
         if (!strcmp(key, "thbig")) return 0;
-        return 1;                    // hints, clock, sounds, fallback default on
+        return 1;                    // hints, clock, sounds, fallback, keep-audio on
     }
 
     static String info(const String& key) {
@@ -254,10 +258,13 @@ private:
                                         String((int)store::sdTotalMB()) + "MB"
                                       : String("none / not FAT32");
         if (key == "i_bt")     return bt::status();
-        if (key == "i_host")   return cloud::hostOnline()
-                                      ? (cloud::hostFeatures().length() ? cloud::hostFeatures()
-                                                                        : String("online"))
-                                      : String("offline");
+        if (key == "i_host") {
+            if (!cloud::hostReachable()) return "offline";
+            // Reachable but rejected is the failure that used to look exactly
+            // like success, so it gets its own words.
+            if (!cloud::hostAuthorised()) return "token rejected";
+            return cloud::hostFeatures().length() ? cloud::hostFeatures() : String("online");
+        }
         return "";
     }
 
@@ -610,6 +617,11 @@ private:
         } else if (key == "a_ping") {
             bool ok = false;
             ui::await("Pinging daemon", [&] { ok = cloud::pingHost(3000); });
+            if (ok && !cloud::hostAuthorised()) {
+                os::toast("daemon found, token rejected - set Mac token", os::Tone::Bad);
+                os::invalidate();
+                return;
+            }
             os::toast(ok ? "daemon OK  " + cloud::hostFeatures() : "no answer",
                       ok ? os::Tone::Good : os::Tone::Bad);
         } else if (key == "a_ntp") {

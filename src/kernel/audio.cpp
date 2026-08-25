@@ -16,6 +16,9 @@ static bool     s_micOwnsI2S = false;
 static uint32_t s_rate = 16000;
 static size_t   s_headroom = 72 * 1024;
 static size_t   s_sdReclaim = 0;
+static float    s_peak = 0.0f;
+static Stop     s_stop = Stop::None;
+static const char* s_startErr = "";
 
 uint32_t sampleRate() { return s_rate; }
 void setSampleRate(uint32_t hz) { s_rate = (hz == 8000 || hz == 16000) ? hz : 16000; }
@@ -94,13 +97,33 @@ void freeBuffer() {
 bool bufferHeld() { return s_buf != nullptr; }
 
 void begin() {
-    micOn();
-    s_micReady = M5Cardputer.Mic.isEnabled();
+    bool ready = micOn();
     // Idle state favours the SD card: most apps read files, few record audio.
+    // The verdict outlives the release -- the hardware works, it is just not
+    // claimed right now, which is what micReady() means.
     releaseI2S();
+    s_micReady = ready;
+    os::logf("audio: microphone %s", ready ? "ready" : "UNAVAILABLE");
 }
 
-bool micReady() { return s_micReady; }
+// Mic.isEnabled() only says a data pin is configured, which is true on a
+// Cardputer from M5.begin() onward whether or not the I2S port ever came up.
+// Mic.isRunning() is the honest test, and s_micReady caches the last real
+// begin() result for the case where the port is deliberately released.
+bool micReady() { return M5Cardputer.Mic.isRunning() || s_micReady; }
+
+Stop stopReason() { return s_stop; }
+float peakLevel() { return s_peak; }
+const char* startError() { return s_startErr; }
+
+const char* stopText() {
+    switch (s_stop) {
+        case Stop::Full:      return "buffer full";
+        case Stop::MicFailed: return "the microphone stopped delivering";
+        case Stop::Stopped:   return "stopped";
+        default:              return "";
+    }
+}
 size_t capacitySamples() { return s_buf ? s_cap : plannedSamples(); }
 uint32_t capacitySeconds() { return capacitySamples() / s_rate; }
 
@@ -119,19 +142,44 @@ void releaseI2S() {
     s_micOwnsI2S = false;
 }
 
-void micOn() {
-    if (s_haveI2S && s_micOwnsI2S) return;
-    store::sdRelease();          // take GPIO40 back from the card
+bool micOn() {
+    // Believing our own bookkeeping is how one failed begin() becomes a
+    // permanently dead microphone: the flags say "on", every later call
+    // early-returns, and record() quietly returns false forever. Ask the driver.
+    if (s_haveI2S && s_micOwnsI2S && M5Cardputer.Mic.isRunning()) return true;
+
+    store::sdRelease();
+    // tone() is asynchronous; ending the port underneath a playing buffer is
+    // what leaves the channel half-torn-down for the next begin().
+    if (M5Cardputer.Speaker.isPlaying()) {
+        M5Cardputer.Speaker.stop();
+        for (int i = 0; i < 20 && M5Cardputer.Speaker.isPlaying(); i++) delay(5);
+    }
     M5Cardputer.Speaker.end();
     delay(60);
-    M5Cardputer.Mic.begin();
+
+    bool ok = M5Cardputer.Mic.begin();
     delay(60);
-    s_micOwnsI2S = true;
-    s_haveI2S = true;
+    if (!ok) {
+        // A channel left installed by an interrupted teardown fails the first
+        // begin() and takes the second. 150ms is cheap next to a lost memo.
+        os::logf("audio: Mic.begin() failed, retrying after a full teardown");
+        M5Cardputer.Mic.end();
+        M5Cardputer.Speaker.end();
+        delay(90);
+        ok = M5Cardputer.Mic.begin();
+        delay(60);
+    }
+
+    s_micOwnsI2S = ok;
+    s_haveI2S = ok;
+    s_micReady = ok;
+    if (!ok) os::logf("audio: microphone unavailable - I2S0 PDM did not start");
+    return ok;
 }
 
 void speakerOn() {
-    if (s_haveI2S && !s_micOwnsI2S) return;
+    if (s_haveI2S && !s_micOwnsI2S && M5Cardputer.Speaker.isRunning()) return;
     store::sdRelease();
     M5Cardputer.Mic.end();
     delay(60);
@@ -141,7 +189,7 @@ void speakerOn() {
     s_haveI2S = true;
 }
 
-void clear() { s_used = 0; s_level = 0.0f; waveClear(); }
+void clear() { s_used = 0; s_level = 0.0f; s_peak = 0.0f; waveClear(); }
 
 int waveCount() { return s_waveFill; }
 
@@ -157,24 +205,62 @@ void waveClear() {
     for (int i = 0; i < WAVE_POINTS; i++) s_wave[i] = 0.0f;
 }
 
-void recordStart() {
+bool recordStart() {
     waveClear();
+    s_startErr = "";
+    s_stop = Stop::None;
+    s_peak = 0.0f;
+
     // micOn() evicts the SD card, which hands ~28KB of driver and FATFS
     // buffers back. Allocating before that throws away a second of recording.
-    micOn();
-    if (!allocBuffer()) { s_recording = false; return; }
+    if (!micOn()) {
+        s_startErr = "microphone did not start";
+        s_recording = false;
+        return false;
+    }
+    if (!allocBuffer()) {
+        s_startErr = "not enough memory to record";
+        s_recording = false;
+        return false;
+    }
     s_used = 0;
     s_level = 0.0f;
-    s_recording = s_micReady;
+    // Not s_micReady: that is a cached verdict. This has to be true right now.
+    s_recording = M5Cardputer.Mic.isRunning();
+    if (!s_recording) {
+        s_startErr = "microphone stopped before the first chunk";
+        freeBuffer();
+        return false;
+    }
+    return true;
 }
 
 bool recordChunk() {
     if (!s_recording || !s_buf) return false;
     size_t room = s_cap - s_used;
-    if (room < chunkSamples()) { s_recording = false; return false; }
+    if (room < chunkSamples()) { s_recording = false; s_stop = Stop::Full; return false; }
 
-    if (!M5Cardputer.Mic.record(s_buf + s_used, chunkSamples(), s_rate)) return false;
-    while (M5Cardputer.Mic.isRecording()) delay(2);
+    // record() only returns false when its lazy begin() fails, i.e. the I2S
+    // port went away underneath us. Say so rather than letting the caller
+    // report an empty recording as "too short".
+    if (!M5Cardputer.Mic.record(s_buf + s_used, chunkSamples(), s_rate)) {
+        os::logf("audio: Mic.record() failed at %.1fs", (double)s_used / s_rate);
+        s_recording = false;
+        s_stop = Stop::MicFailed;
+        return false;
+    }
+    // The mic task fills the slot asynchronously; bail out rather than spin
+    // forever if it never does.
+    uint32_t deadline = millis() + 500;
+    while (M5Cardputer.Mic.isRecording()) {
+        if (millis() > deadline) {
+            os::logf("audio: mic task stalled at %.1fs", (double)s_used / s_rate);
+            s_recording = false;
+            s_stop = Stop::MicFailed;
+            return false;
+        }
+        delay(2);
+    }
 
     // Envelope in SUBS slices so the waveform scrolls smoothly, plus the
     // whole-chunk RMS for the coarse level readout.
@@ -194,11 +280,34 @@ bool recordChunk() {
     s_level = rms / 6000.0f;
     if (s_level > 1.0f) s_level = 1.0f;
 
+    // Peak, not RMS: it is the one number that separates "the room was quiet"
+    // from "the microphone handed us a buffer of zeroes".
+    for (size_t i = 0; i < chunkSamples(); i++) {
+        int32_t v = s_buf[s_used + i];
+        if (v < 0) v = -v;
+        float f = (float)v / 32767.0f;
+        if (f > s_peak) s_peak = f;
+    }
+
     s_used += chunkSamples();
     return true;
 }
 
-void recordStop() { s_recording = false; }
+// One block, no heap, no recording state -- enough to prove the I2S path is
+// alive without committing the memory a real memo needs.
+bool sampleOnce(int16_t* buf, size_t samples) {
+    if (!buf || !samples) return false;
+    if (!micOn()) return false;
+    if (!M5Cardputer.Mic.record(buf, samples, s_rate)) return false;
+    uint32_t deadline = millis() + 500;
+    while (M5Cardputer.Mic.isRecording()) {
+        if (millis() > deadline) return false;
+        delay(2);
+    }
+    return true;
+}
+
+void recordStop() { if (s_recording) s_stop = Stop::Stopped; s_recording = false; }
 bool recording() { return s_recording; }
 size_t recordedSamples() { return s_used; }
 float recordedSeconds() { return (float)s_used / s_rate; }

@@ -18,7 +18,18 @@ eight envelope points so the trace scrolls smoothly. The RGB LED goes red while
 recording, because the screen is not always facing you.
 
 `TAB` record / again · `P` play it back · `S` save as a note · `D` append to
-today's daily note · `C` send to the assistant · `Q` 16kHz / 8kHz
+today's daily note · `C` send to the assistant · `Q` 16kHz / 8kHz ·
+`M` mic check
+
+The key that starts a recording cannot also stop it: the stop is armed only
+once every key has been released. Without that, the `TAB` still under your
+thumb ends the capture a chunk after it began, and the memo comes back as
+"too short".
+
+`M` is the diagnostic. It reads 512 samples straight off the microphone with no
+buffer allocated and shows the live level and the running peak, which separates
+the three things that used to look identical: the I2S port refusing to start,
+the port running but hearing nothing, and a recording that was genuinely brief.
 
 The audio itself is written to `/recordings/<timestamp>.wav` as soon as
 recording stops -- before transcription, so a failed or unconfigured
@@ -44,7 +55,20 @@ design — an agent without a filesystem is not an agent.
 ## Translate
 15 languages. `TAB` speaks, `Enter` translates what you typed.
 
-`TAB` talk · `ctrl+L` change language
+`TAB` talk · `Enter` translate typed text · `ctrl+L` change language ·
+`ctrl+R` script / romanised · `fn`+`;`/`.` scroll
+
+The built-in glyph set is ASCII, so for most of these languages the reply had
+nowhere to be drawn. The firmware now embeds efont (~311KB), which covers
+Cyrillic, Greek, kana and 6764 CJK ideographs — Russian, Ukrainian, Uzbek,
+Chinese and Japanese render in their own script.
+
+Korean, Arabic and Hindi have no glyphs at this size, so every translation asks
+for a romanisation in the same round trip and falls back to it automatically.
+Whether a reply can be drawn is decided by asking the font for each codepoint,
+not by a table of script ranges, so the answer stays correct if the font is
+ever changed. `ctrl+R` switches between the two by hand — useful even for
+scripts that do render, since reading a phrase aloud is half the point.
 
 ## Tasks
 Stored as a markdown task list, so the file is already what Obsidian wants and
@@ -75,6 +99,14 @@ focus into break and counts rounds.
 open-meteo for the forecast, ip-api for "where am I" — both over plain HTTP, so
 it costs none of the ~45KB a TLS handshake wants. Coordinates are cached, so a
 city that has not moved is not geocoded again.
+
+Conditions are drawn, not just named. WMO codes collapse to nine shapes — clear,
+mostly clear, partly cloudy, overcast, fog, drizzle, rain, snow, storm — built
+from the same primitives as the rest of the icon set, so there are no bitmaps in
+flash, one size parameter serves both the headline and the forecast rows, and
+they recolour with the theme. The headline icon follows `is_day` and shows a
+crescent after dark; forecast rows always use the daytime shape, since a moon on
+a Tuesday would be claiming something the forecast does not say.
 
 `R` refresh · `L` set location · `U` switch °F/°C
 

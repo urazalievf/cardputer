@@ -114,6 +114,41 @@ static void testText() {
     check(ui::ellipsize("abc", 10) == "abc", "ellipsize leaves short strings alone");
     check(ui::firstLine("# Title\nbody") == "Title", "firstLine strips markdown heading");
     check(ui::firstLine("") == "(empty)", "firstLine handles empty");
+
+    group("utf-8");
+    // Arduino String is a byte array. Measuring a translation by byte index is
+    // what turned Russian into mojibake, so the decoder gets its own tests.
+    const String ru = "\u043f\u0440\u0438\u0432\u0435\u0442";          // privet, 6 cp / 12 bytes
+    const String jp = "\u3053\u3093\u306b\u3061\u306f";                 // konnichiwa, 5 cp / 15 bytes
+    check(ru.length() == 12 && ui::utf8Len(ru) == 6, "cyrillic counts codepoints, not bytes");
+    check(jp.length() == 15 && ui::utf8Len(jp) == 5, "kana counts codepoints, not bytes");
+    check(ui::utf8Len("plain ascii") == 11, "ascii length is unchanged");
+    check(ui::utf8Sub(ru, 0, 3) == "\u043f\u0440\u0438", "substring cuts on a character boundary");
+    check(ui::utf8Sub(ru, 3, 3) == "\u0432\u0435\u0442", "substring offsets by codepoint");
+
+    int i = 0;
+    check(ui::utf8Decode(ru, i) == 0x043F && i == 2, "decode advances by the encoded width");
+    i = 0;
+    check(ui::utf8Decode("A", i) == 'A' && i == 1, "ascii decodes as itself");
+    // A truncated sequence must yield a replacement char and still advance, or
+    // any caller looping over it hangs.
+    String bad = ru.substring(0, 1);
+    i = 0;
+    check(ui::utf8Decode(bad, i) == 0xFFFD && i > 0, "a truncated sequence terminates");
+
+    group("glyph coverage");
+    check(ui::isAscii("hello") && !ui::isAscii(ru), "ascii detection");
+    check(ui::canRender('A'), "ascii always renders");
+    check(ui::renderable("hello world"), "ascii is renderable");
+    // These are the languages Translate offers; the font either has them or the
+    // app has to fall back to a romanisation, and it must know which.
+    check(ui::canRender(0x043F), "cyrillic renders (Russian, Ukrainian, Uzbek)");
+    check(ui::canRender(0x3053), "hiragana renders (Japanese)");
+    check(ui::canRender(0x4E2D), "CJK renders (Chinese)");
+    check(!ui::canRender(0x0627), "arabic does not - romanisation expected");
+    check(!ui::canRender(0x0939), "devanagari does not - romanisation expected");
+    check(!ui::canRender(0xAC00), "hangul does not - romanisation expected");
+    check(ui::renderable(ru) && ui::renderable(jp), "whole strings resolve");
 }
 
 // -------------------------------------------------------------------- storage
@@ -264,10 +299,30 @@ static void testNet() {
 // ---------------------------------------------------------------------- audio
 static void testAudio() {
     group("audio");
-    check(audio::micReady(), "microphone initialised");
+    // micReady() used to be Mic.isEnabled(), which only reports that a data pin
+    // is configured -- true on a Cardputer from boot onwards even when the I2S
+    // port never came up. Every capture then failed on the first chunk and the
+    // apps blamed the user for speaking too briefly. Prove the port instead.
+    check(audio::micOn(), "microphone I2S starts");
+    check(M5Cardputer.Mic.isRunning(), "mic capture task is running");
+    check(audio::micReady(), "microphone reports ready");
+
+    {
+        // One real block through the hardware. Silence is fine here -- a bench
+        // is quiet -- but a refused read is not.
+        static int16_t probe[512];
+        check(audio::sampleOnce(probe, 512), "a raw block reads back from the mic");
+    }
+
+    // Coming back from a release is the path Voice takes on every recording.
+    audio::releaseI2S();
+    check(!M5Cardputer.Mic.isRunning(), "releaseI2S stops the capture task");
+    check(audio::micOn(), "microphone restarts after a release");
+
     size_t planned = audio::capacitySamples();
     check(planned > audio::sampleRate(), "planned capacity is over one second");
     check(!audio::bufferHeld(), "buffer is not held at rest");
+    check(audio::stopReason() == audio::Stop::None, "no stale stop reason at rest");
 
     // Must succeed even with the canvas still up: allocation has to size
     // itself against memory that is actually free, not memory it hopes for.

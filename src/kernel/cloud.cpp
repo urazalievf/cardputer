@@ -10,6 +10,8 @@
 namespace cloud {
 
 static bool     s_online = false;
+static bool     s_reachable = false;
+static bool     s_authorised = false;
 static uint32_t s_lastPing = 0;
 static String   s_features = "";
 static std::vector<String> s_backends;
@@ -23,6 +25,8 @@ String hostBase() {
 }
 
 bool pingHost(uint32_t timeoutMs) {
+    s_reachable = false;
+    s_authorised = false;
     if (!net::connected()) return false;
     String base = hostBase();
     if (!base.length()) return false;
@@ -30,8 +34,14 @@ bool pingHost(uint32_t timeoutMs) {
     http.setConnectTimeout(timeoutMs);
     http.setTimeout(timeoutMs);
     if (!http.begin(base + "/ping")) return false;
+    // Sent even though /ping does not require it: the daemon echoes back
+    // whether it recognised us, which is the only cheap way to find out that
+    // the token is wrong before a real request fails.
+    String token = store::getStr("hosttoken", "");
+    if (token.length()) http.addHeader("Authorization", "Bearer " + token);
     int code = http.GET();
     if (code == 200) {
+        s_reachable = true;
         JsonDocument d;
         if (!deserializeJson(d, http.getString())) {
             s_backends.clear();
@@ -41,18 +51,34 @@ bool pingHost(uint32_t timeoutMs) {
                          (d["claude"].as<bool>() ? " claude" : "") +
                          (d["vault"].as<bool>()  ? " vault"  : "") +
                          " stt:" + d["stt"].as<String>();
+            // Daemons that predate the field do not report it; assume the best
+            // rather than declaring a working setup broken.
+            s_authorised = d["authorised"].is<bool>() ? d["authorised"].as<bool>() : true;
+            if (!s_authorised) s_features += " (token rejected)";
+        } else {
+            s_authorised = true;      // answered, but not in JSON we understand
         }
     }
     http.end();
+    // Direct callers (Settings > Test Mac) refresh the cache too, so the very
+    // next hostOnline() does not fire a second round trip for the same answer.
+    s_lastPing = millis();
+    s_online = (code == 200) && s_authorised;
     return code == 200;
 }
+
+bool hostReachable() { hostOnline(); return s_reachable; }
+bool hostAuthorised() { hostOnline(); return s_authorised; }
 
 bool hostOnline() {
     if (millis() - s_lastPing > 8000) {
         s_lastPing = millis();
         s_online = pingHost();
     }
-    return s_online;
+    // A daemon that will not accept our token cannot answer a single useful
+    // request, so counting it as a configured provider only means the fallback
+    // chain never runs and the user sees 401 instead of the next provider.
+    return s_online && s_authorised;
 }
 
 String hostFeatures() { return s_features; }

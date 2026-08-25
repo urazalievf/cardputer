@@ -33,7 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 HERE = Path(__file__).resolve().parent
 
 DEFAULTS = {
@@ -419,6 +419,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._deny()
         if url.path == "/ping":
             backends = available_backends()
+            # /ping is open so the device can always discover us, but it still
+            # reports whether the token we were sent would be accepted. Without
+            # this the handheld cannot tell "daemon is ready" from "daemon will
+            # 401 every real request", and shows the second as the first.
             return self._send({
                 "ok": True,
                 "version": VERSION,
@@ -426,6 +430,8 @@ class Handler(BaseHTTPRequestHandler):
                 "backends": backends,
                 "vault": vault_root() is not None,
                 "stt": CFG["stt"],
+                "auth_required": bool(CFG.get("auth_token")),
+                "authorised": self._authorised(),
             })
         if url.path == "/vault/list":
             return self._send(handle_vault_list(parse_qs(url.query)))

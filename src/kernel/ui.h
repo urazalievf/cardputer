@@ -62,6 +62,51 @@ void spinner(int cx, int cy, uint16_t color);   // animates off millis()
 // otherwise freeze on whatever frame it was last drawn in.
 bool animating();
 
+// ---- unicode ----
+// The built-in glyph set is ASCII and nothing else, so a Russian or Chinese
+// translation renders as blanks. The embedded efont covers Cyrillic, Greek,
+// kana and ~6.7k CJK ideographs, but it is 16px tall and variable width, so it
+// is scoped to the run of text that needs it rather than switched on globally.
+//
+// Scoped: takes the font on construction, puts the old one back on scope exit,
+// so an early return cannot leave the whole OS in a 16px font.
+struct UnicodeScope {
+    UnicodeScope();
+    ~UnicodeScope();
+private:
+    const void* prev_;
+    bool active_;
+};
+
+// Does the embedded font have a glyph for this codepoint? Asked of the font
+// itself rather than assumed from a range table, so the answer stays correct
+// if the font ever changes.
+bool canRender(uint32_t cp);
+
+// True when every codepoint in `utf8` can be drawn -- ASCII always can, the
+// rest have to be in the efont. Callers use this to decide between showing the
+// native script and showing a romanisation.
+bool renderable(const String& utf8);
+
+// True if the string is pure 7-bit ASCII, i.e. the default font is enough.
+bool isAscii(const String& utf8);
+
+// UTF-8 aware string handling. The Arduino String is a byte array: measuring,
+// truncating and wrapping it by byte index cuts multi-byte characters in half
+// and turns a valid translation into mojibake.
+int      utf8Len(const String& s);                   // in codepoints
+uint32_t utf8Decode(const String& s, int& byteIdx);  // advances byteIdx
+String   utf8Sub(const String& s, int fromCp, int cpCount);
+
+// Wrap to a pixel width using the font that is active right now, which is the
+// only way to lay out a proportional font. Used for translated output.
+std::vector<String> wrapPx(const String& src, int maxPx);
+
+// Page through UTF-8 text in the embedded font. Returns how many lines it came
+// to, so the caller can bound scrolling.
+int unicodePager(const String& body, int scroll, uint16_t color,
+                 int rows, int y0, int lineH = 17);
+
 // ---- text helpers ----
 std::vector<String> wrap(const String& src, int maxChars = -1);
 String firstLine(const String& src, int maxChars = -1);

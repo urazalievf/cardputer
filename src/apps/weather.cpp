@@ -80,33 +80,178 @@ public:
 
         const char* unit = metric_ ? "C" : "F";
 
+        // The headline: temperature large on the left, the sky itself on the
+        // right. The icon is the thing you read from across the room.
+        drawSky(SCREEN_W - 30, BODY_Y + 21, 16, wmoSky(code_), day_);
+
         ui::gfx().setTextSize(3);
         String big = String((int)lroundf(temp_)) + unit;
-        ui::text(6, BODY_Y + 6, big, ui::c().accent);
+        ui::text(6, BODY_Y + 5, big, ui::c().accent);
         ui::gfx().setTextSize(1);
 
-        int rx = 6 + (int)big.length() * 18 + 8;
-        ui::text(rx, BODY_Y + 6, ui::ellipsize(cond_, (SCREEN_W - rx) / 6), ui::c().fg);
-        ui::text(rx, BODY_Y + 18, String("feels ") + (int)lroundf(feels_) + unit, ui::c().dim);
-
-        ui::text(6, BODY_Y + 34, String("humidity ") + humidity_ + "%", ui::c().dim);
-        ui::text(6, BODY_Y + 45, String("wind ") + String(wind_, 0) +
+        // Wrapped to the icon's left edge rather than the panel's, so a long
+        // condition never runs underneath it.
+        int room = (SCREEN_W - 52 - 6) / 6;
+        ui::text(6, BODY_Y + 32, ui::ellipsize(cond_, room), ui::c().fg);
+        ui::text(6, BODY_Y + 42, String("feels ") + (int)lroundf(feels_) + unit +
+                                 "   hum " + humidity_ + "%", ui::c().dim);
+        ui::text(6, BODY_Y + 52, String("wind ") + String(wind_, 0) +
                                  (metric_ ? " km/h" : " mph"), ui::c().dim);
-        ui::gfx().drawFastHLine(0, BODY_Y + 58, SCREEN_W, ui::c().border);
+        ui::gfx().drawFastHLine(0, BODY_Y + 62, SCREEN_W, ui::c().border);
 
-        int y = BODY_Y + 63;
-        for (int i = 0; i < days_ && y < HINT_Y - 12; i++) {
+        int y = BODY_Y + 66;
+        for (int i = 0; i < days_ && y + 12 < HINT_Y - 3; i++) {
             ui::text(6, y, dayName_[i], ui::c().accent2);
+            // Daytime shape for a whole-day forecast: a moon on a Tuesday
+            // would be saying something the forecast does not.
+            drawSky(38, y + 4, 6, wmoSky(dayCode_[i]), true);
             String range = String((int)lroundf(dayMin_[i])) + " / " +
                            String((int)lroundf(dayMax_[i])) + unit;
             ui::text(52, y, range, ui::c().fg);
             ui::text(110, y, ui::ellipsize(dayCond_[i], 21), ui::c().dim);
-            y += 11;
+            y += 12;
         }
         ui::hint("R refresh   L place   U " + String(metric_ ? "to F" : "to C"));
     }
 
 private:
+    // The nine shapes worth drawing. Anything finer than this is illegible at
+    // 13 pixels, and the word next to the icon carries the detail.
+    enum class Sky : uint8_t {
+        Clear, MostlyClear, PartlyCloudy, Overcast, Fog,
+        Drizzle, Rain, Snow, Storm,
+    };
+
+    static Sky wmoSky(int code) {
+        switch (code) {
+            case 0:  return Sky::Clear;
+            case 1:  return Sky::MostlyClear;
+            case 2:  return Sky::PartlyCloudy;
+            case 3:  return Sky::Overcast;
+            case 45: case 48: return Sky::Fog;
+            case 51: case 53: case 55: case 56: case 57: return Sky::Drizzle;
+            case 61: case 63: case 65: case 66: case 67:
+            case 80: case 81: case 82: return Sky::Rain;
+            case 71: case 73: case 75: case 77: case 85: case 86: return Sky::Snow;
+            case 95: case 96: case 99: return Sky::Storm;
+            default: return Sky::Overcast;
+        }
+    }
+
+    // Drawn from primitives at any radius, like the rest of the icon set: no
+    // bitmaps to store, no second copy for the forecast rows, and they follow
+    // the theme. `r` is half the icon box; 16 for the headline, 6 for a row.
+    static void sun(int cx, int cy, int r, uint16_t col) {
+        auto& g = ui::gfx();
+        int body = max(2, r * 55 / 100);
+        g.fillCircle(cx, cy, body, col);
+        // Rays only once there is room for them to read as rays.
+        if (r < 6) return;
+        for (int i = 0; i < 8; i++) {
+            float a = i * (float)PI / 4.0f;
+            int x0 = cx + (int)(cosf(a) * (body + 2)), y0 = cy + (int)(sinf(a) * (body + 2));
+            int x1 = cx + (int)(cosf(a) * (r + 1)),    y1 = cy + (int)(sinf(a) * (r + 1));
+            g.drawLine(x0, y0, x1, y1, col);
+        }
+    }
+
+    // A crescent is a disc with a second disc bitten out of it in the page
+    // colour, which is why this has to be drawn before anything overlaps it.
+    static void moon(int cx, int cy, int r, uint16_t col) {
+        auto& g = ui::gfx();
+        int body = max(2, r * 62 / 100);
+        g.fillCircle(cx, cy, body, col);
+        g.fillCircle(cx + body / 2, cy - body / 2, body, ui::c().bg);
+    }
+
+    static void cloud(int cx, int cy, int r, uint16_t col) {
+        auto& g = ui::gfx();
+        int big = max(2, r * 52 / 100);
+        int left = max(1, r * 38 / 100);
+        int right = max(1, r * 34 / 100);
+        g.fillCircle(cx - r / 3, cy + r / 8, left, col);
+        g.fillCircle(cx + r / 8, cy - r / 6, big, col);
+        g.fillCircle(cx + r / 2, cy + r / 6, right, col);
+        g.fillRect(cx - r / 3, cy + r / 8, r * 5 / 6, max(1, left), col);
+    }
+
+    // Streaks for rain, shorter and sparser for drizzle.
+    static void fall(int cx, int cy, int r, uint16_t col, int count, int len) {
+        auto& g = ui::gfx();
+        int step = max(2, r / 2);
+        int x = cx - step * (count - 1) / 2;
+        for (int i = 0; i < count; i++, x += step)
+            g.drawLine(x + 1, cy, x - 1, cy + len, col);
+    }
+
+    static void flakes(int cx, int cy, int r, uint16_t col, int count) {
+        auto& g = ui::gfx();
+        int step = max(2, r / 2);
+        int x = cx - step * (count - 1) / 2;
+        int arm = r < 8 ? 1 : 2;
+        for (int i = 0; i < count; i++, x += step) {
+            int y = cy + (i % 2 ? arm + 1 : 0);
+            g.drawFastHLine(x - arm, y, arm * 2 + 1, col);
+            g.drawFastVLine(x, y - arm, arm * 2 + 1, col);
+        }
+    }
+
+    static void bolt(int cx, int cy, int r, uint16_t col) {
+        auto& g = ui::gfx();
+        int h = max(3, r * 2 / 3), w = max(2, r / 3);
+        g.fillTriangle(cx + w / 2, cy, cx - w, cy + h / 2, cx, cy + h / 2, col);
+        g.fillTriangle(cx, cy + h / 2, cx + w, cy + h / 2, cx - w / 2, cy + h, col);
+    }
+
+    // One entry point so the headline and the forecast rows can never drift.
+    static void drawSky(int cx, int cy, int r, Sky s, bool day) {
+        const auto& p = ui::c();
+        uint16_t sunCol = p.warn, cloudCol = p.dim, wetCol = p.accent2, snowCol = p.fg;
+        switch (s) {
+            case Sky::Clear:
+                day ? sun(cx, cy, r, sunCol) : moon(cx, cy, r, p.fg);
+                break;
+            case Sky::MostlyClear:
+                // Sun up and left, a small cloud tucked under it.
+                day ? sun(cx - r / 4, cy - r / 4, r * 3 / 4, sunCol)
+                    : moon(cx - r / 4, cy - r / 4, r * 3 / 4, p.fg);
+                cloud(cx + r / 3, cy + r / 3, r * 2 / 3, cloudCol);
+                break;
+            case Sky::PartlyCloudy:
+                day ? sun(cx - r / 2, cy - r / 2, r * 2 / 3, sunCol)
+                    : moon(cx - r / 2, cy - r / 2, r * 2 / 3, p.fg);
+                cloud(cx + r / 6, cy + r / 5, r * 5 / 6, cloudCol);
+                break;
+            case Sky::Overcast:
+                cloud(cx, cy, r, cloudCol);
+                break;
+            case Sky::Fog: {
+                cloud(cx, cy - r / 4, r * 4 / 5, cloudCol);
+                auto& g = ui::gfx();
+                for (int i = 0; i < 3; i++)
+                    g.drawFastHLine(cx - r + (i % 2) * 2, cy + r / 2 + i * max(2, r / 4),
+                                    r * 2 - 2, p.border);
+                break;
+            }
+            case Sky::Drizzle:
+                cloud(cx, cy - r / 4, r * 4 / 5, cloudCol);
+                fall(cx, cy + r / 2, r, wetCol, 3, max(2, r / 3));
+                break;
+            case Sky::Rain:
+                cloud(cx, cy - r / 4, r * 4 / 5, cloudCol);
+                fall(cx, cy + r / 2, r, wetCol, 4, max(3, r * 2 / 3));
+                break;
+            case Sky::Snow:
+                cloud(cx, cy - r / 4, r * 4 / 5, cloudCol);
+                flakes(cx, cy + r * 3 / 5, r, snowCol, 3);
+                break;
+            case Sky::Storm:
+                cloud(cx, cy - r / 4, r * 4 / 5, cloudCol);
+                bolt(cx, cy + r / 3, r, sunCol);
+                break;
+        }
+    }
+
     // WMO weather interpretation codes, collapsed to what fits on this screen.
     static String wmo(int code) {
         switch (code) {
@@ -215,7 +360,7 @@ private:
         String url = "http://api.open-meteo.com/v1/forecast?latitude=" + String(lat_, 4) +
                      "&longitude=" + String(lon_, 4) +
                      "&current=temperature_2m,apparent_temperature,relative_humidity_2m,"
-                     "wind_speed_10m,weather_code"
+                     "wind_speed_10m,weather_code,is_day"
                      "&daily=weather_code,temperature_2m_max,temperature_2m_min"
                      "&forecast_days=4&timezone=auto";
         if (!metric_) url += "&temperature_unit=fahrenheit&wind_speed_unit=mph";
@@ -230,7 +375,11 @@ private:
         feels_ = cur["apparent_temperature"].as<float>();
         humidity_ = cur["relative_humidity_2m"].as<int>();
         wind_ = cur["wind_speed_10m"].as<float>();
-        cond_ = wmo(cur["weather_code"].as<int>());
+        code_ = cur["weather_code"].as<int>();
+        cond_ = wmo(code_);
+        // Absent on a cached or trimmed reply; daylight is the safer default
+        // because a sun drawn at night is a smaller lie than a moon at noon.
+        day_ = cur["is_day"].is<int>() ? cur["is_day"].as<int>() != 0 : true;
 
         JsonArray codes = doc["daily"]["weather_code"].as<JsonArray>();
         JsonArray maxs = doc["daily"]["temperature_2m_max"].as<JsonArray>();
@@ -238,7 +387,8 @@ private:
         JsonArray dates = doc["daily"]["time"].as<JsonArray>();
         days_ = 0;
         for (size_t i = 1; i < codes.size() && days_ < 3; i++) {   // skip today
-            dayCond_[days_] = wmo(codes[i].as<int>());
+            dayCode_[days_] = codes[i].as<int>();
+            dayCond_[days_] = wmo(dayCode_[days_]);
             dayMax_[days_] = maxs[i].as<float>();
             dayMin_[days_] = mins[i].as<float>();
             dayName_[days_] = weekday(dates[i].as<String>());
@@ -266,7 +416,9 @@ private:
     Mode mode_ = VIEW;
     String err_, buf_, place_, cond_;
     float lat_ = 0, lon_ = 0, temp_ = 0, feels_ = 0, wind_ = 0;
-    int humidity_ = 0, days_ = 0;
+    int humidity_ = 0, days_ = 0, code_ = 0;
+    bool day_ = true;
+    int dayCode_[3] = {0};
     String dayCond_[3], dayName_[3];
     float dayMax_[3] = {0}, dayMin_[3] = {0};
     bool have_ = false, metric_ = false;

@@ -10,7 +10,7 @@
 // Voice memo -> text. TAB starts and stops; capture runs chunked from tick()
 // so the level meter stays live instead of freezing the UI.
 class Voice : public App {
-    enum Mode : uint8_t { IDLE, REC, RESULT };
+    enum Mode : uint8_t { IDLE, REC, RESULT, CHECK };
 public:
     const char* name() const override { return "Voice"; }
     const char* blurb() const override { return "speak"; }
@@ -24,11 +24,13 @@ public:
             return String(b);
         }
         if (mode_ == RESULT) return "Transcript";
+        if (mode_ == CHECK)  return "Mic check";
         return "Voice";
     }
 
     bool onBack() override {
-        if (mode_ == REC)    { stopAndTranscribe(); return true; }
+        if (mode_ == REC)    { finish(); return true; }
+        if (mode_ == CHECK)  { mode_ = IDLE; os::invalidate(); return true; }
         if (mode_ == RESULT) {
             mode_ = IDLE;
             audio::freeBuffer();
@@ -52,6 +54,7 @@ public:
         switch (mode_) {
             case IDLE:
                 if (k.tab || k.space || k.enter) { start(); return; }
+                if (k.is('m')) { mode_ = CHECK; checkPeak_ = 0; os::invalidate(); return; }
                 if (k.is('q')) {
                     uint32_t next = store::getInt("micrate", 16000) == 16000 ? 8000 : 16000;
                     store::setInt("micrate", next);
@@ -61,8 +64,19 @@ public:
                     os::invalidate();
                 }
                 return;
+            case CHECK:
+                mode_ = IDLE;
+                audio::releaseI2S();
+                os::invalidate();
+                return;
             case REC:
-                stopAndTranscribe();
+                // The TAB that started this recording is usually still down, and
+                // the keyboard reports a change the moment the matrix settles.
+                // Only a key pressed after a clean release may stop the capture,
+                // or the memo ends a chunk after it began -- which is exactly
+                // what "too short" used to mean.
+                if (!armed_ || !k.any()) return;
+                finish();
                 return;
             case RESULT:
                 if (k.tab)               { start(); return; }
@@ -77,8 +91,11 @@ public:
     }
 
     void tick() override {
+        if (mode_ == CHECK) { checkTick(); return; }
         if (mode_ != REC) return;
-        if (!audio::recordChunk()) { stopAndTranscribe(); return; }
+        // Arm the stop key only once every key has been let go of.
+        if (!armed_ && !M5Cardputer.Keyboard.isPressed()) armed_ = true;
+        if (!audio::recordChunk()) { finish(); return; }
         os::invalidate();
     }
 
@@ -87,27 +104,30 @@ public:
             case IDLE:   return drawIdle();
             case REC:    return drawRec();
             case RESULT: return drawResult();
+            case CHECK:  return drawCheck();
         }
     }
 
 private:
     void drawIdle() {
         if (!audio::micReady()) {
-            ui::centered(48, "Microphone unavailable", ui::c().bad);
-            ui::centered(62, "I2S did not come up", ui::c().dim);
-            ui::hint("` back");
+            ui::icon(SCREEN_W / 2 - 5, 30, ui::Icon::Cross, ui::c().bad);
+            ui::centered(46, "Microphone unavailable", ui::c().bad);
+            ui::centered(58, "I2S0 PDM did not start", ui::c().dim);
+            ui::centered(74, "M retries it and shows the level", ui::c().dim);
+            ui::hint("M mic check   ` back");
             return;
         }
-        ui::icon(SCREEN_W / 2 - 5, 34, ui::Icon::Mic, ui::c().accent);
-        ui::centered(52, "Press TAB to record", ui::c().fg);
-        ui::centered(66, "up to " + String((unsigned)audio::capacitySeconds()) + " seconds  at " +
+        ui::icon(SCREEN_W / 2 - 5, 30, ui::Icon::Mic, ui::c().accent);
+        ui::centered(48, "Press TAB to record", ui::c().fg);
+        ui::centered(62, "up to " + String((unsigned)audio::capacitySeconds()) + " seconds  at " +
                          String(audio::sampleRate() / 1000) + "kHz", ui::c().dim);
 
         String engine = ai::sttLabel(ai::preferredStt());
         bool ready = ai::sttConfigured(ai::preferredStt());
-        ui::centered(86, engine, ready ? ui::c().good : ui::c().warn);
-        if (!ready) ui::centered(98, "not configured - Settings", ui::c().dim);
-        ui::hint("TAB record   Q quality   ` back");
+        ui::centered(82, engine, ready ? ui::c().good : ui::c().warn);
+        if (!ready) ui::centered(94, ai::sttSetupHint(ai::preferredStt()), ui::c().dim);
+        ui::hint("TAB record   M mic check   Q quality   ` back");
     }
 
     // A live, scrolling waveform — mirrored around a centre line, newest on the
@@ -143,18 +163,61 @@ private:
         String t = String(audio::recordedSeconds(), 1) + "s  /  " +
                    String((unsigned)audio::capacitySeconds()) + "s";
         ui::centered(94, t, ui::c().dim);
-        ui::hint("any key stops and transcribes");
+        ui::hint(armed_ ? "any key stops and transcribes" : "keep talking - let go of TAB to arm stop");
+    }
+
+    // Proving the microphone works costs one 512-sample block and no heap, so
+    // it stays usable on a board too full to allocate a real capture buffer.
+    void checkTick() {
+        static int16_t buf[512];
+        if (!audio::sampleOnce(buf, 512)) { checkOk_ = false; os::invalidate(); return; }
+        checkOk_ = true;
+        uint64_t sum = 0;
+        int16_t peak = 0;
+        for (size_t i = 0; i < 512; i++) {
+            int32_t v = buf[i];
+            sum += (uint64_t)(v * v);
+            int16_t a = v < 0 ? -v : v;
+            if (a > peak) peak = a;
+        }
+        checkLevel_ = sqrtf((float)sum / 512) / 6000.0f;
+        if (checkLevel_ > 1.0f) checkLevel_ = 1.0f;
+        float p = (float)peak / 32767.0f;
+        if (p > checkPeak_) checkPeak_ = p;
+        os::invalidate();
+    }
+
+    void drawCheck() {
+        if (!checkOk_) {
+            ui::icon(SCREEN_W / 2 - 5, 34, ui::Icon::Cross, ui::c().bad);
+            ui::centered(52, "The microphone will not start", ui::c().bad);
+            ui::centered(66, "I2S0 refused the PDM channel", ui::c().dim);
+            ui::centered(80, "A reboot clears a stuck channel", ui::c().dim);
+            ui::hint("any key back");
+            return;
+        }
+        ui::centered(22, "Say something", ui::c().fg);
+        ui::progress(16, 40, SCREEN_W - 32, 14, checkLevel_, ui::c().good);
+        ui::centered(62, "peak " + String((int)(checkPeak_ * 100)) + "%", ui::c().dim);
+        if (checkPeak_ < 0.01f) {
+            ui::centered(80, "silent - the port is up but", ui::c().warn);
+            ui::centered(92, "no sound is reaching it", ui::c().warn);
+        } else {
+            ui::centered(86, "microphone is working", ui::c().good);
+        }
+        ui::hint("any key back");
     }
 
     void drawResult() {
         int rows = theme::bodyRows();
+        int y = BODY_Y;
         if (wavPath_.length()) {
-            String name = wavPath_.substring(wavPath_.lastIndexOf('/') + 1);
-            ui::text(3, BODY_Y, "saved " + name, ui::c().good);
-            ui::pager(text_, scroll_, ui::c().fg, rows - 1, BODY_Y + theme::rowHeight());
-            return;
+            String base = wavPath_.substring(wavPath_.lastIndexOf('/') + 1);
+            ui::text(3, y, "saved " + base, ui::c().good);
+            y += theme::rowHeight();
+            rows--;
         }
-        ui::pager(text_, scroll_, ui::c().fg, rows);
+        ui::pager(text_, scroll_, ui::c().fg, rows, y);
         ui::hint(String(havePcm_ ? "P play  " : "") + "S note  D daily  C ask  TAB again");
     }
 
@@ -168,17 +231,20 @@ private:
     }
 
     void start() {
-        if (!audio::micReady()) { os::toast("no mic", os::Tone::Bad); return; }
         havePcm_ = false;
         wavPath_ = "";
+        armed_ = false;
         prepareBudget();
         // The capture buffer and the UI canvas cannot both fit in internal RAM.
         ui::releaseCanvas();
         if (theme::sounds()) audio::chirpOk();
-        audio::recordStart();
-        if (!audio::recording()) {
-            os::toast("not enough memory to record", os::Tone::Bad);
+        if (!audio::recordStart()) {
+            // Every failure used to surface as "not enough memory"; say which
+            // one it actually was, because the two have different fixes.
+            os::toast(audio::startError(), os::Tone::Bad);
             ui::acquireCanvas();
+            mode_ = IDLE;
+            os::invalidate();
             return;
         }
         hw::led(70, 0, 0);            // the screen is not always facing you
@@ -186,12 +252,12 @@ private:
         os::invalidate();
     }
 
-    void stopAndTranscribe() {
+    void finish() {
         audio::recordStop();
         hw::ledOff();
         size_t n = audio::recordedSamples();
         if (n < audio::sampleRate() / 2) {
-            os::toast("too short", os::Tone::Bad);
+            os::toast(shortReason(n), os::Tone::Bad);
             audio::freeBuffer();
             ui::acquireCanvas();
             mode_ = IDLE;
@@ -199,6 +265,13 @@ private:
             return;
         }
         mode_ = RESULT;
+
+        // Keep the audio before spending anything on the network: a failed
+        // transcription should never also cost you the recording. Writing it
+        // takes GPIO40 back from the microphone, which is fine now that the
+        // capture is over.
+        saveWav(n);
+
         ai::Result r;
         ui::await("Transcribing " + String(audio::recordedSeconds(), 1) + "s",
                   [&] { r = ai::transcribe(audio::pcm(), n); });
@@ -211,12 +284,53 @@ private:
             text_ = r.text;
             os::toast(String("heard it - ") + r.usedLabel(), os::Tone::Good);
         } else {
-            text_ = "[" + (r.error.length() ? r.error : String("empty transcript")) + "]";
+            text_ = transcribeFailure(r);
             if (theme::sounds()) audio::chirpErr();
-            os::toast(r.error, os::Tone::Bad);
+            os::toast(r.error.length() ? r.error : String("no transcript"), os::Tone::Bad);
         }
         scroll_ = 0;
         os::invalidate();
+    }
+
+    // "too short" was the same message whether the microphone died, the buffer
+    // filled, or you really did only speak for a moment. They are different
+    // problems and only one of them is yours to fix.
+    String shortReason(size_t samples) const {
+        float secs = (float)samples / audio::sampleRate();
+        if (audio::stopReason() == audio::Stop::MicFailed)
+            return "microphone stopped after " + String(secs, 1) + "s";
+        if (samples == 0)
+            return "captured nothing - try M for a mic check";
+        if (audio::peakLevel() < 0.01f)
+            return "captured " + String(secs, 1) + "s of silence";
+        return "too short - " + String(secs, 1) + "s";
+    }
+
+    String transcribeFailure(const ai::Result& r) const {
+        String why = r.error.length() ? r.error : String("empty transcript");
+        String body = "[" + why + "]";
+        if (!ai::sttConfigured(ai::preferredStt()))
+            body += "\n\n" + String(ai::sttSetupHint(ai::preferredStt()));
+        else if (audio::peakLevel() < 0.02f)
+            body += "\n\nThe recording was almost silent, so there may have been "
+                    "nothing to transcribe.";
+        if (wavPath_.length())
+            body += "\n\nThe audio is safe at " + wavPath_ + " - you can retry later.";
+        return body;
+    }
+
+    // The card is unmounted while the microphone holds the bus, so this is the
+    // first chance to write anything. Documented behaviour since v0.2 that was
+    // never actually wired up.
+    void saveWav(size_t samples) {
+        // Settings has offered "Keep audio" since v0.2; nothing read it, and
+        // nothing wrote the file either.
+        if (!store::getInt("recsave", 1)) return;
+        if (!store::sdReady()) return;
+        ui::busy("Saving audio");
+        String path = store::newRecordingName();
+        if (store::writeWav(path, audio::pcm(), samples)) wavPath_ = path;
+        else os::logf("voice: WAV save failed (%s)", path.c_str());
     }
 
     // Hear it back. The samples are gone once the buffer is freed, so this only
@@ -285,6 +399,9 @@ private:
     String text_, wavPath_;
     int scroll_ = 0;
     bool havePcm_ = false;
+    bool armed_ = false;            // a key may stop the capture
+    bool checkOk_ = true;
+    float checkLevel_ = 0, checkPeak_ = 0;
 };
 
 App* voiceApp() { static Voice a; return &a; }
