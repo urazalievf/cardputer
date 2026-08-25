@@ -2,6 +2,7 @@
 #include <Preferences.h>
 #include <SD.h>
 #include <SPI.h>
+#include <sd_diskio.h>
 #include "audio.h"
 #include <time.h>
 #include <ArduinoJson.h>
@@ -187,6 +188,63 @@ bool isDir(const String& path) {
     bool d = f.isDirectory();
     f.close();
     return d;
+}
+
+bool formatSd(String& err) {
+    if (s_usbOwned) { err = "the host has the card"; return false; }
+    audio::releaseI2S();
+    sdRelease();
+    SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+
+    // Two cases, and they need opposite treatment.
+    //
+    // If the card already mounts, format_if_empty will not fire -- the mount
+    // succeeds, so nothing gets formatted. Clear the boot sectors through the
+    // mounted handle first so the next mount fails on purpose.
+    //
+    // If it does not mount (exFAT, NTFS, a fresh card), the mount failing is
+    // exactly the trigger, and we can go straight to it.
+    //
+    // Deliberately NOT using a bare sdcard_init() here: it hands back a drive
+    // slot even when the card never initialised, and the geometry it then
+    // reports is uninitialised memory.
+    if (SD.begin(SD_CS, SPI, 20000000, "/sd", 5, /*format_if_empty=*/false)) {
+        uint32_t ss = SD.sectorSize();
+        if (!ss || ss > 4096) ss = 512;
+        uint8_t* zero = (uint8_t*)calloc(1, ss);
+        if (!zero) { SD.end(); SPI.end(); err = "out of memory"; return false; }
+        bool wiped = true;
+        for (uint32_t sector = 0; sector < 64 && wiped; sector++)
+            wiped = SD.writeRAW(zero, sector);
+        free(zero);
+        SD.end();
+        if (!wiped) {
+            SPI.end();
+            s_lastFail = millis() ? millis() : 1;
+            err = "card refused writes - is the lock switch on?";
+            return false;
+        }
+        os::logf("format: existing filesystem cleared");
+    }
+
+    // The mount now fails, which is what makes format_if_empty build a fresh
+    // FAT volume. exFAT is not compiled into this FATFS, so it produces FAT32.
+    bool ok = SD.begin(SD_CS, SPI, 20000000, "/sd", 5, /*format_if_empty=*/true);
+    if (!ok) {
+        SPI.end();
+        s_lastFail = millis() ? millis() : 1;
+        err = "format failed - no card, or the card is faulty";
+        return false;
+    }
+
+    s_mounted = true;
+    s_cardPresent = true;
+    s_lastFail = 0;
+    s_sizeMB = SD.totalBytes() / (1024ULL * 1024ULL);
+    s_usedMB = SD.usedBytes() / (1024ULL * 1024ULL);
+    ensureDir(NOTES_DIR);
+    os::logf("format: done, %llu MB as FAT", s_sizeMB);
+    return true;
 }
 
 std::vector<Entry> listDir(const String& path) {

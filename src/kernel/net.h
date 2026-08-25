@@ -40,6 +40,12 @@ String passwordFor(const String& ssid);
 // Try every saved network in signal order. Returns true once joined.
 bool autoJoin();
 
+// Ask the network where it is: city, coordinates and UTC offset. Runs once
+// after the first successful join, and seeds both the clock and Weather.
+bool autoLocate();
+bool located();
+String placeName();
+
 void syncTime();                  // NTP, using the configured TZ
 bool timeValid();
 String clockString();             // "14:32" or "--:--"

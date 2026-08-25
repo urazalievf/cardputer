@@ -22,6 +22,11 @@ void   factoryReset();          // wipes cfg, wifi, chat; leaves SD notes alone
 void   setUsbOwned(bool owned);
 bool   usbOwned();
 
+// Reformat the card to FAT32, erasing everything on it. Blocking and slow on a
+// large card, so callers should wrap it in ui::await(). Returns false with a
+// reason in `err`.
+bool   formatSd(String& err);
+
 // Well-known config keys.
 static const char* K_HOST        = "host";       // companion daemon, e.g. "mac.local"
 static const char* K_HOST_PORT   = "hostport";

@@ -101,6 +101,8 @@ private:
     bool dictate() {
         if (!audio::micReady()) { os::toast("no mic", os::Tone::Bad); return false; }
         ui::releaseCanvas();
+        audio::setSampleRate(store::getInt("micrate", 16000));
+        audio::setHeadroomBytes(ai::preferredStt() != ai::Stt::Host ? 72 * 1024 : 40 * 1024);
         if (theme::sounds()) audio::chirpOk();
         audio::recordStart();
         if (!audio::recording()) {
@@ -122,7 +124,7 @@ private:
         }
         audio::recordStop();
         size_t n = audio::recordedSamples();
-        if (n < audio::SAMPLE_RATE / 2) {
+        if (n < audio::sampleRate() / 2) {
             audio::freeBuffer();
             ui::acquireCanvas();
             os::toast("too short", os::Tone::Bad);

@@ -5,6 +5,7 @@
 #include "../kernel/store.h"
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include "../kernel/net.h"
 
 // Weather with no account and no API key, over plain HTTP — so it costs none
 // of the ~45KB a TLS handshake would want. open-meteo for the forecast,
@@ -140,10 +141,22 @@ private:
         http.setReuse(false);
         if (!http.begin(url)) { err = "connect failed"; return false; }
         int code = http.GET();
-        if (code != 200) { err = String("HTTP ") + code; http.end(); return false; }
-        DeserializationError e = deserializeJson(doc, http.getStream());
+        if (code != 200) {
+            err = String("HTTP ") + code;
+            http.end();
+            os::logf("weather: %s -> %s", url.c_str(), err.c_str());
+            return false;
+        }
+        // getString() de-chunks; getStream() does not, and open-meteo replies
+        // with chunked transfer encoding.
+        String body = http.getString();
         http.end();
-        if (e) { err = String("bad json: ") + e.c_str(); return false; }
+        DeserializationError e = deserializeJson(doc, body);
+        if (e) {
+            err = String("bad json: ") + e.c_str();
+            os::logf("weather: parse failed (%d bytes): %s", body.length(), e.c_str());
+            return false;
+        }
         return true;
     }
 

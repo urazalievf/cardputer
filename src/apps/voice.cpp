@@ -51,7 +51,15 @@ public:
     void onKey(const KeyEvent& k) override {
         switch (mode_) {
             case IDLE:
-                if (k.tab || k.space || k.enter) start();
+                if (k.tab || k.space || k.enter) { start(); return; }
+                if (k.is('q')) {
+                    uint32_t next = store::getInt("micrate", 16000) == 16000 ? 8000 : 16000;
+                    store::setInt("micrate", next);
+                    prepareBudget();
+                    os::toast(String(next / 1000) + "kHz - up to " +
+                              String((unsigned)audio::capacitySeconds()) + "s", os::Tone::Good);
+                    os::invalidate();
+                }
                 return;
             case REC:
                 stopAndTranscribe();
@@ -92,14 +100,14 @@ private:
         }
         ui::icon(SCREEN_W / 2 - 5, 34, ui::Icon::Mic, ui::c().accent);
         ui::centered(52, "Press TAB to record", ui::c().fg);
-        ui::centered(66, "up to " + String((unsigned)audio::capacitySeconds()) + " seconds",
-                     ui::c().dim);
+        ui::centered(66, "up to " + String((unsigned)audio::capacitySeconds()) + " seconds  at " +
+                         String(audio::sampleRate() / 1000) + "kHz", ui::c().dim);
 
         String engine = ai::sttLabel(ai::preferredStt());
         bool ready = ai::sttConfigured(ai::preferredStt());
         ui::centered(86, engine, ready ? ui::c().good : ui::c().warn);
         if (!ready) ui::centered(98, "not configured - Settings", ui::c().dim);
-        ui::hint("TAB record   ` back");
+        ui::hint("TAB record   Q quality   ` back");
     }
 
     // A live, scrolling waveform — mirrored around a centre line, newest on the
@@ -143,9 +151,19 @@ private:
         ui::hint(String(havePcm_ ? "P play  " : "") + "S note  D daily  C ask  TAB again");
     }
 
+    // How long a recording can be is pure arithmetic on a board with no PSRAM:
+    // free RAM, minus whatever the upload will need, divided by the data rate.
+    // Both of those are worth tuning before every recording.
+    static void prepareBudget() {
+        audio::setSampleRate(store::getInt("micrate", 16000));
+        bool tls = ai::preferredStt() != ai::Stt::Host;
+        audio::setHeadroomBytes(tls ? 72 * 1024 : 40 * 1024);
+    }
+
     void start() {
         if (!audio::micReady()) { os::toast("no mic", os::Tone::Bad); return; }
         havePcm_ = false;
+        prepareBudget();
         // The capture buffer and the UI canvas cannot both fit in internal RAM.
         ui::releaseCanvas();
         if (theme::sounds()) audio::chirpOk();
@@ -164,7 +182,7 @@ private:
         audio::recordStop();
         hw::ledOff();
         size_t n = audio::recordedSamples();
-        if (n < audio::SAMPLE_RATE / 2) {
+        if (n < audio::sampleRate() / 2) {
             os::toast("too short", os::Tone::Bad);
             audio::freeBuffer();
             ui::acquireCanvas();
@@ -200,8 +218,8 @@ private:
         audio::speakerOn();
         M5Cardputer.Speaker.setVolume(200);
         M5Cardputer.Speaker.playRaw(audio::pcm(), audio::recordedSamples(),
-                                    audio::SAMPLE_RATE, false);
-        uint32_t total = audio::recordedSamples() * 1000UL / audio::SAMPLE_RATE;
+                                    audio::sampleRate(), false);
+        uint32_t total = audio::recordedSamples() * 1000UL / audio::sampleRate();
         uint32_t start = millis();
         while (M5Cardputer.Speaker.isPlaying() && millis() - start < total + 500) {
             ui::beginFrame();

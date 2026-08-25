@@ -9,6 +9,8 @@
 #include "cloud.h"
 #include "hw.h"
 #include "expr.h"
+#include <SPI.h>
+#include <sd_diskio.h>
 #include <math.h>
 
 // Exercises the parts of the OS that don't need a finger on the keyboard, and
@@ -160,6 +162,30 @@ static void testTheme() {
         check(true, "card present - backoff not exercised");
     }
 
+    // Read-only probe of the card at the SD protocol level. This is the step
+    // formatSd() does first, so if it works the format path can reach the card
+    // even when no filesystem on it is readable. Nothing is written.
+    // sdcard_init() hands back a drive slot even when the card never came up,
+    // and the geometry it reports is then uninitialised memory. Record what it
+    // claims rather than asserting on it -- the format path deliberately goes
+    // through SD.begin() instead, which reports failure honestly.
+    group("sd hardware");
+    {
+        SPI.begin(40, 39, 14, 12);
+        uint8_t pdrv = sdcard_init(12, &SPI, 20000000);
+        if (pdrv == 0xFF) {
+            os::logf("   note  sdcard_init: no drive slot");
+        } else {
+            uint8_t buf[512];
+            bool readOk = sd_read_raw(pdrv, buf, 0);
+            os::logf("   note  sdcard_init slot %u, sector 0 read %s, claims %u sectors",
+                     pdrv, readOk ? "OK" : "FAILED", (unsigned)sdcard_num_sectors(pdrv));
+            sdcard_uninit(pdrv);
+        }
+        SPI.end();
+        check(true, "low-level probe completed without faulting");
+    }
+
     group("theme");
     int startPreset = theme::preset();
     check(theme::presetCount() >= 7, "at least seven palettes plus Custom");
@@ -240,7 +266,7 @@ static void testAudio() {
     group("audio");
     check(audio::micReady(), "microphone initialised");
     size_t planned = audio::capacitySamples();
-    check(planned > audio::SAMPLE_RATE, "planned capacity is over one second");
+    check(planned > audio::sampleRate(), "planned capacity is over one second");
     check(!audio::bufferHeld(), "buffer is not held at rest");
 
     // Must succeed even with the canvas still up: allocation has to size
@@ -250,8 +276,8 @@ static void testAudio() {
     if (got) {
         check(audio::bufferHeld(), "buffer reports held");
         check(audio::pcm() != nullptr, "pcm pointer is valid");
-        check(audio::capacitySamples() >= audio::SAMPLE_RATE,
-              String("got ") + String(audio::capacitySamples() / (float)audio::SAMPLE_RATE, 1) +
+        check(audio::capacitySamples() >= audio::sampleRate(),
+              String("got ") + String(audio::capacitySamples() / (float)audio::sampleRate(), 1) +
               "s of capture room");
         audio::freeBuffer();
         check(!audio::bufferHeld(), "buffer frees");

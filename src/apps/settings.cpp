@@ -128,6 +128,7 @@ private:
             {ROUTE,  "Ask who?",    "route"},
             {TOGGLE, "Auto fallback","aifall"},
             {ENUMSEL,"Speech input","aistt"},
+            {ENUMSEL,"Mic quality", "micrate"},
             {STR,    "Claude model","m_anthropic", 0,0,1, "claude-haiku-4-5-20251001"},
             {STR,    "GPT model",   "m_openai",    0,0,1, "gpt-4o-mini"},
             {STR,    "Gemini model","m_gemini",    0,0,1, "gemini-2.0-flash"},
@@ -147,6 +148,7 @@ private:
             {HEADER, "Notes & vault", ""},
             {STR,    "Vault folder","vault",     0,0,1, "Cardputer"},
             {ACTION, "Remount SD",  "a_sd"},
+            {ACTION, "Format SD card","a_format"},
 
             {HEADER, "System", ""},
             {STR,    "Timezone",    "tz",        0,0,1, "EST5EDT,M3.2.0,M11.1.0"},
@@ -184,6 +186,8 @@ private:
         if (!strcmp(key, "thpreset")) return theme::presetName(theme::preset());
         if (!strcmp(key, "aiprov"))   return ai::spec(ai::preferred()).label;
         if (!strcmp(key, "aistt"))    return ai::sttLabel(ai::preferredStt());
+        if (!strcmp(key, "micrate"))
+            return store::getInt("micrate", 16000) == 8000 ? "8kHz (longer)" : "16kHz (better)";
         return "?";
     }
 
@@ -311,6 +315,10 @@ private:
             ai::setPreferredStt((ai::Stt)v);
             return;
         }
+        if (key == "micrate") {
+            store::setInt("micrate", store::getInt("micrate", 16000) == 16000 ? 8000 : 16000);
+            return;
+        }
     }
 
     void activate(const Entry& it) {
@@ -359,10 +367,15 @@ private:
                                (ai::sttConfigured(s) ? "  *" : "  (not set up)"));
             }
             cur = (int)ai::preferredStt();
+        } else if (key == "micrate") {
+            opts.push_back("16 kHz  - better transcription");
+            opts.push_back("8 kHz   - twice the recording length");
+            cur = store::getInt("micrate", 16000) == 8000 ? 1 : 0;
         }
         int pick = ui::chooser(it.label, opts, cur);
         if (pick >= 0) {
-            if (key == "thpreset")    theme::setPreset(pick);
+            if (key == "micrate")     store::setInt("micrate", pick == 1 ? 8000 : 16000);
+            else if (key == "thpreset") theme::setPreset(pick);
             else if (key == "aiprov") ai::setPreferred((ai::Provider)pick);
             else if (key == "aistt")  ai::setPreferredStt((ai::Stt)pick);
             os::toast(String(it.label) + ": " + enumValue(it.key), os::Tone::Good);
@@ -403,6 +416,37 @@ private:
         if (!strcmp(it.key, "host")) cloud::begin();
         os::toast(String(it.label) + " saved", os::Tone::Good);
         mode_ = LIST;
+        os::invalidate();
+    }
+
+    // Formatting destroys everything on the card, so it asks twice and the
+    // second question names what is actually about to be erased.
+    void formatCard() {
+        if (store::usbOwned()) {
+            os::toast("the host has the card", os::Tone::Bad);
+            return;
+        }
+        if (!ui::confirm("Format the SD card as FAT32? This erases EVERYTHING on it.")) {
+            os::invalidate();
+            return;
+        }
+
+        String what = store::sdReady()
+                          ? String((int)store::sdUsedMB()) + "MB of " +
+                            String((int)store::sdTotalMB()) + "MB in use"
+                          : String("card is not readable by this device");
+        if (!ui::confirm("Last chance. " + what + ". Erase it?")) {
+            os::toast("format cancelled");
+            os::invalidate();
+            return;
+        }
+
+        String err;
+        bool ok = false;
+        // A large card takes tens of seconds; await keeps the UI honest.
+        ui::await("Formatting - do not unplug", [&] { ok = store::formatSd(err); });
+        os::toast(ok ? "formatted - " + String((int)store::sdTotalMB()) + "MB ready" : err,
+                  ok ? os::Tone::Good : os::Tone::Bad);
         os::invalidate();
     }
 
@@ -573,6 +617,8 @@ private:
             bool ok = store::sdAcquire(/*force=*/true);
             os::toast(ok ? "SD mounted" : "no card, or not FAT32",
                       ok ? os::Tone::Good : os::Tone::Bad);
+        } else if (key == "a_format") {
+            return formatCard();
         } else if (key == "a_wipewifi") {
             if (ui::confirm("Forget every saved WiFi network?")) {
                 for (auto& s : net::savedNetworks()) net::forgetNetwork(s);

@@ -64,10 +64,11 @@ public:
     void draw() override {
         if (mode_ == USBDRIVE) return drawUsb();
         if (!store::sdReady()) {
-            ui::centered(44, "No SD card mounted", ui::c().bad);
-            ui::centered(58, "insert one and press M", ui::c().dim);
-            ui::centered(72, "card must be FAT32, not exFAT", ui::c().dim);
-            ui::hint("M mount   ` back");
+            ui::centered(40, "No SD card mounted", ui::c().bad);
+            ui::centered(54, "insert one and press M", ui::c().dim);
+            ui::centered(68, "must be FAT32 - exFAT will not mount", ui::c().dim);
+            ui::centered(84, "F formats it (erases everything)", ui::c().warn);
+            ui::hint("M mount   F format   ` back");
             return;
         }
         if (mode_ == EDIT) return drawEdit();
@@ -151,6 +152,13 @@ private:
     }
 
     void keyBrowse(const KeyEvent& k) {
+        if (k.is('f') && !store::sdReady()) {
+            // On an unreadable card F means format, not "new folder" -- there
+            // is no folder to make until the card has a filesystem.
+            os::launchByName("Settings");
+            os::toast("Settings > Format SD card");
+            return;
+        }
         if (k.is('m')) {
             store::sdRelease();
             bool ok = store::sdAcquire(/*force=*/true);

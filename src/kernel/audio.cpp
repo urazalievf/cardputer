@@ -13,7 +13,15 @@ static bool     s_recording = false;
 static float    s_level = 0.0f;
 static bool     s_micOwnsI2S = false;
 
-static const size_t CHUNK = SAMPLE_RATE / 10;   // 100ms
+static uint32_t s_rate = 16000;
+static size_t   s_headroom = 72 * 1024;
+
+uint32_t sampleRate() { return s_rate; }
+void setSampleRate(uint32_t hz) { s_rate = (hz == 8000 || hz == 16000) ? hz : 16000; }
+void setHeadroomBytes(size_t bytes) { s_headroom = bytes; }
+
+// 100ms of audio, whatever the rate.
+static size_t chunkSamples() { return s_rate / 10; }
 static size_t s_reclaimable = 0;
 
 // Ring buffer of envelope points. Cheap: 240 floats, written once per sub-block.
@@ -34,19 +42,19 @@ void setReclaimableBytes(size_t bytes) { s_reclaimable = bytes; }
 // allocation so the UI can promise a realistic ceiling.
 static size_t plannedSamples() {
     size_t psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    size_t want = SAMPLE_RATE * 30;
+    size_t want = s_rate * 30;
     if (psram >= want * sizeof(int16_t)) return want;
     // Leave enough for a TLS handshake (~45KB) plus slack; the caller releases
     // the canvas first, so count that back in.
     size_t avail = heap_caps_get_free_size(MALLOC_CAP_INTERNAL) + s_reclaimable;
-    size_t bytes = avail > 72 * 1024 ? avail - 72 * 1024 : 0;
+    size_t bytes = avail > s_headroom ? avail - s_headroom : 0;
     if (bytes > 200 * 1024) bytes = 200 * 1024;
     return bytes / sizeof(int16_t);
 }
 
 bool allocBuffer() {
     if (s_buf) return true;
-    size_t want = SAMPLE_RATE * 30;
+    size_t want = s_rate * 30;
     if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) >= want * sizeof(int16_t)) {
         s_buf = (int16_t*)heap_caps_malloc(want * sizeof(int16_t),
                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -59,12 +67,12 @@ bool allocBuffer() {
     // rather than the total, or a fragmented heap fails a request that "fits".
     size_t total = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    size_t budget = total > 72 * 1024 ? total - 72 * 1024 : 0;
+    size_t budget = total > s_headroom ? total - s_headroom : 0;
     size_t bytes = largest < budget ? largest : budget;
     if (bytes > 200 * 1024) bytes = 200 * 1024;
 
     // Back off rather than give up: a shorter memo beats no memo.
-    while (bytes >= SAMPLE_RATE * sizeof(int16_t)) {
+    while (bytes >= s_rate * sizeof(int16_t)) {
         s_buf = (int16_t*)malloc(bytes);
         if (s_buf) { s_cap = bytes / sizeof(int16_t); return true; }
         bytes = bytes / 4 * 3;
@@ -92,7 +100,7 @@ void begin() {
 
 bool micReady() { return s_micReady; }
 size_t capacitySamples() { return s_buf ? s_cap : plannedSamples(); }
-uint32_t capacitySeconds() { return capacitySamples() / SAMPLE_RATE; }
+uint32_t capacitySeconds() { return capacitySamples() / s_rate; }
 
 // GPIO40 is the I2S bit clock AND the SD clock. Any audio path has to evict
 // the SD card first, and store::sdAcquire() evicts audio in the other
@@ -159,14 +167,14 @@ void recordStart() {
 bool recordChunk() {
     if (!s_recording || !s_buf) return false;
     size_t room = s_cap - s_used;
-    if (room < CHUNK) { s_recording = false; return false; }
+    if (room < chunkSamples()) { s_recording = false; return false; }
 
-    if (!M5Cardputer.Mic.record(s_buf + s_used, CHUNK, SAMPLE_RATE)) return false;
+    if (!M5Cardputer.Mic.record(s_buf + s_used, chunkSamples(), s_rate)) return false;
     while (M5Cardputer.Mic.isRecording()) delay(2);
 
     // Envelope in SUBS slices so the waveform scrolls smoothly, plus the
     // whole-chunk RMS for the coarse level readout.
-    const size_t sub = CHUNK / SUBS;
+    const size_t sub = chunkSamples() / SUBS;
     uint64_t total = 0;
     for (int s = 0; s < SUBS; s++) {
         uint64_t sum = 0;
@@ -182,14 +190,14 @@ bool recordChunk() {
     s_level = rms / 6000.0f;
     if (s_level > 1.0f) s_level = 1.0f;
 
-    s_used += CHUNK;
+    s_used += chunkSamples();
     return true;
 }
 
 void recordStop() { s_recording = false; }
 bool recording() { return s_recording; }
 size_t recordedSamples() { return s_used; }
-float recordedSeconds() { return (float)s_used / SAMPLE_RATE; }
+float recordedSeconds() { return (float)s_used / s_rate; }
 float level() { return s_level; }
 const int16_t* pcm() { return s_buf; }
 
@@ -202,8 +210,8 @@ size_t wavHeader(uint8_t* h, size_t pcmBytes) {
     memcpy(h + 12, "fmt ", 4);     le32(h + 16, 16);
     le16(h + 20, 1);               // PCM
     le16(h + 22, 1);               // mono
-    le32(h + 24, SAMPLE_RATE);
-    le32(h + 28, SAMPLE_RATE * 2); // byte rate
+    le32(h + 24, s_rate);
+    le32(h + 28, s_rate * 2); // byte rate
     le16(h + 32, 2);               // block align
     le16(h + 34, 16);              // bits per sample
     memcpy(h + 36, "data", 4);     le32(h + 40, pcmBytes);

@@ -226,6 +226,12 @@ void run() {
             if (k.esc) back();
             else app->onKey(k);
         }
+        // The key may have switched apps. Everything below must act on the app
+        // that is current NOW -- ticking and drawing the one we captured before
+        // the keypress leaves the launcher on screen after Enter, so nothing
+        // appears to open until the next key forces another pass.
+        app = current();
+        if (!app) return;
     }
 
     app->tick();

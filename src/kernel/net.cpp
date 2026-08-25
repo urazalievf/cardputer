@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <algorithm>
 #include <time.h>
+#include <HTTPClient.h>
 
 namespace net {
 
@@ -11,6 +12,7 @@ static std::vector<Network> s_results;
 static bool s_scanning = false;
 static uint32_t s_lastAutoJoin = 0;
 static bool s_timeSynced = false;
+static bool s_located = false;
 
 // ---------------- saved networks ----------------
 static JsonDocument loadNets() {
@@ -172,6 +174,10 @@ void begin() {
 
 void tick() {
     if (connected()) {
+        if (!s_located && store::getInt("geoauto", 1)) {
+            s_located = true;             // one attempt per boot, success or not
+            autoLocate();
+        }
         if (!s_timeSynced) syncTime();
         return;
     }
@@ -182,9 +188,67 @@ void tick() {
 }
 
 // ---------------- time ----------------
+bool located() { return s_located || store::getStr("wxname", "").length() > 0; }
+String placeName() { return store::getStr("wxname", ""); }
+
+// ip-api gives city, coordinates and the *current* UTC offset in one plain-HTTP
+// call with no key. The offset already includes daylight saving, and this runs
+// on every boot, so the clock corrects itself within a day of a DST change
+// without needing a POSIX timezone rule or an IANA database on the device.
+bool autoLocate() {
+    if (!connected()) return false;
+    HTTPClient http;
+    http.setConnectTimeout(5000);
+    http.setTimeout(10000);
+    http.setReuse(false);
+    if (!http.begin("http://ip-api.com/json/?fields=status,city,regionName,lat,lon,timezone,offset"))
+        return false;
+    int code = http.GET();
+    String body = code == 200 ? http.getString() : String("");
+    http.end();
+    if (code != 200) { os::logf("locate: HTTP %d", code); return false; }
+
+    JsonDocument d;
+    if (deserializeJson(d, body)) { os::logf("locate: bad json"); return false; }
+    if (d["status"].as<String>() != "success") { os::logf("locate: refused"); return false; }
+
+    float lat = d["lat"].as<float>();
+    float lon = d["lon"].as<float>();
+    long offset = d["offset"].as<long>();
+    String city = d["city"].as<String>();
+    String region = d["regionName"].as<String>();
+    String zone = d["timezone"].as<String>();
+    String place = city + (region.length() ? ", " + region : "");
+
+    // Seed Weather so it does not have to geocode anything.
+    store::setStr("wxlat", String(lat, 4));
+    store::setStr("wxlon", String(lon, 4));
+    store::setStr("wxname", place);
+    store::setStr("wxfor", store::getStr("wxplace", ""));
+    store::setStr("tzname", zone);
+    store::setInt("tzoffset", (int)offset);
+    s_located = true;
+
+    // Fixed offset rather than a TZ rule: we re-query every boot anyway.
+    configTime(offset, 0, "pool.ntp.org", "time.google.com");
+    struct tm t;
+    if (getLocalTime(&t, 3000)) s_timeSynced = true;
+    os::logf("locate: %s (%s, UTC%+ld) clock %s", place.c_str(), zone.c_str(),
+             offset / 3600, s_timeSynced ? "set" : "pending");
+    return true;
+}
+
 void syncTime() {
     if (!connected()) return;
-    String tz = store::getStr(store::K_TZ, "EST5EDT,M3.2.0,M11.1.0");
+    // A manually entered timezone always wins over the detected offset.
+    String tz = store::getStr(store::K_TZ, "");
+    if (!tz.length() && store::getStr("tzname", "").length()) {
+        configTime(store::getInt("tzoffset", 0), 0, "pool.ntp.org", "time.google.com");
+        struct tm t;
+        if (getLocalTime(&t, 1500)) s_timeSynced = true;
+        return;
+    }
+    if (!tz.length()) tz = "EST5EDT,M3.2.0,M11.1.0";
     configTzTime(tz.c_str(), "pool.ntp.org", "time.google.com");
     // Don't block the UI: a single short poll, tick() will call again.
     struct tm t;

@@ -5,7 +5,15 @@
 
 namespace audio {
 
-static const uint32_t SAMPLE_RATE = 16000;   // what Whisper wants
+// 16 kHz is what Whisper wants. 8 kHz halves the data rate and therefore
+// doubles how long you can record, at some cost in transcription accuracy --
+// on a board with no PSRAM that trade is often worth making.
+uint32_t sampleRate();
+void     setSampleRate(uint32_t hz);
+
+// Bytes to keep free for whatever happens after the recording. A TLS handshake
+// wants ~45KB; the Mac daemon over plain HTTP wants almost nothing.
+void     setHeadroomBytes(size_t bytes);
 
 void begin();
 bool micReady();
