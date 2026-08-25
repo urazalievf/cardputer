@@ -401,12 +401,19 @@ void inputLine(int y, const String& prompt, const String& value,
 
 // A rotating arc on a faint track. Eight discrete dots read as a blocky ring
 // on a 240x135 panel; a swept arc reads as motion.
+// Re-armed every time a spinner is drawn, and expires shortly after it stops
+// being drawn, so an idle screen goes back to costing nothing.
+static uint32_t s_animUntil = 0;
+
+bool animating() { return millis() < s_animUntil; }
+
 void spinner(int cx, int cy, uint16_t col) {
+    s_animUntil = millis() + 250;
     auto& g = gfx();
     const int rOut = 12, rIn = 8;
 
-    g.fillArc(cx, cy, rIn, rOut, 0, 360, c().surface);      // track
-    g.drawArc(cx, cy, rIn, rOut, 0, 360, c().border);       // rim, so it reads as a ring
+    g.fillArc(cx, cy, rIn, rOut, 0, 359.9f, c().surface);   // track
+    g.drawArc(cx, cy, rIn, rOut, 0, 359.9f, c().border);    // rim, so it reads as a ring
 
     float head = fmodf(millis() * 0.30f, 360.0f);           // ~50 rpm
 

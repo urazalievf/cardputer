@@ -243,6 +243,16 @@ void run() {
 
     app->tick();
 
+    // Drawing is lazy -- nothing repaints until something asks. That means any
+    // animation freezes unless the screen showing it happens to invalidate on a
+    // timer, which is a thing every app has to remember and Weather did not.
+    // Driving it here fixes the whole class at once.
+    static uint32_t lastAnim = 0;
+    if (ui::animating() && millis() - lastAnim >= 60) {
+        lastAnim = millis();
+        invalidate();
+    }
+
     if (consumeDirty()) {
         ui::beginFrame();
         app->draw();

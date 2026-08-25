@@ -57,6 +57,11 @@ void inputLine(int y, const String& prompt, const String& value,
                uint16_t color, bool caret = true);
 void spinner(int cx, int cy, uint16_t color);   // animates off millis()
 
+// True while a spinner was drawn recently. The kernel uses this to keep
+// repainting on its own: rendering is lazy, so anything animated would
+// otherwise freeze on whatever frame it was last drawn in.
+bool animating();
+
 // ---- text helpers ----
 std::vector<String> wrap(const String& src, int maxChars = -1);
 String firstLine(const String& src, int maxChars = -1);

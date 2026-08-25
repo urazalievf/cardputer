@@ -71,14 +71,12 @@ private:
         if (k.down || k.is('j')) { sel_ = (sel_ + 1) % 2; os::invalidate(); return; }
         if (!(k.enter || k.space)) return;
         if (sel_ == 0) {
-            ui::busy("Starting BLE radio");
-            bt::begin(bt::Mode::Scanning);
+            ui::await("Starting BLE radio", [] { bt::begin(bt::Mode::Scanning); });
             bt::startScan(5);
             wasScanning_ = true;
             mode_ = SCAN;
         } else {
-            ui::busy("Advertising as a keyboard");
-            bt::begin(bt::Mode::Keyboard);
+            ui::await("Advertising as a keyboard", [] { bt::begin(bt::Mode::Keyboard); });
             wasConnected_ = false;
             typed_ = "";
             mode_ = KEYBOARD;

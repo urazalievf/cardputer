@@ -1,42 +1,31 @@
-# Branches
+# Contributing
 
-| | |
-|---|---|
-| **`uat`** | default. Work lands here first and gets used on a real device before it moves on. |
-| **`prod`** | known-good. Only ever updated from `uat`, by pull request. |
-
-Both are protected: a pull request with one approval, no force-pushes, no
-deletions, and review approvals are dismissed when new commits arrive.
-
-## Working on it
+One branch: **`main`**. It is protected — changes arrive by pull request with
+one approval, and force-pushes and deletion are blocked.
 
 ```bash
-git switch uat
+git switch main && git pull
 git switch -c my-change
 # ...
 git push -u origin my-change
-gh pr create --base uat
+gh pr create --base main
 ```
 
-## Promoting to prod
+## Before merging anything that touches firmware
+
+This is not a web app. A bad `main` is something you flash onto a device that
+then has to be physically recovered, sometimes by holding G0 while plugging the
+cable in. So run it on hardware first:
 
 ```bash
-gh pr create --base prod --head uat --title "Promote uat to prod"
-```
-
-Do this only after the change has actually run on hardware. Firmware is not
-like a web app: a bad `prod` is something you flash onto a device that then
-has to be recovered, sometimes with the G0 button.
-
-Before promoting, at minimum:
-
-```bash
-pio run -e cardputer-selftest -t upload && pio device monitor   # 201 checks
+pio run -e cardputer -t upload            # does it still boot
+pio device monitor                        # read the boot report
+pio run -e cardputer-selftest -t upload   # 201 checks, PASS/FAIL per line
 ```
 
 ## A note on the rules
 
-Protection deliberately does **not** apply to admins. With only one person on
-the repository, GitHub will not let you approve your own pull request, so
-enforcing the rules on admins would lock the owner out of merging entirely.
-The rules stop everyone else; the owner keeps a way through.
+Protection deliberately does **not** apply to admins. GitHub will not let anyone
+approve their own pull request, so with a single collaborator, enforcing the
+rules on admins would lock the owner out of merging entirely rather than adding
+any safety. The rules stop everyone else; the owner keeps a way through.
