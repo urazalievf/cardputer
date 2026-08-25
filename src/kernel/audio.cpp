@@ -20,6 +20,15 @@ static bool     s_micOwnsI2S = false;
 static uint32_t s_rate = 16000;
 static size_t   s_headroom = 72 * 1024;
 static size_t   s_sdReclaim = 0;
+static bool     s_streaming = false;
+
+// Two seconds at 16kHz. An SD write of one chunk is a few milliseconds, so this
+// is three orders of magnitude of slack; anything larger is RAM held for no
+// reason while the card is mounted and memory is scarce.
+static const size_t STREAM_RING_BYTES = 64 * 1024;
+// The ring is freed before the upload, so the only thing that has to survive
+// alongside it is the filesystem doing the writing.
+static const size_t STREAM_HEADROOM = 24 * 1024;
 static float    s_peak = 0.0f;
 static Stop     s_stop = Stop::None;
 static const char* s_startErr = "";
@@ -27,6 +36,9 @@ static const char* s_startErr = "";
 uint32_t sampleRate() { return s_rate; }
 void setSampleRate(uint32_t hz) { s_rate = (hz == 8000 || hz == 16000) ? hz : 16000; }
 void setHeadroomBytes(size_t bytes) { s_headroom = bytes; }
+void setStreaming(bool on) { s_streaming = on; }
+bool streaming() { return s_streaming; }
+static size_t headroom() { return s_streaming ? STREAM_HEADROOM : s_headroom; }
 void setSdReclaimable(size_t bytes) { s_sdReclaim = bytes; }
 
 // 100ms of audio, whatever the rate.
@@ -55,9 +67,12 @@ static size_t plannedSamples() {
     if (psram >= want * sizeof(int16_t)) return want;
     // Leave enough for a TLS handshake (~45KB) plus slack; the caller releases
     // the canvas first, so count that back in.
-    size_t avail = heap_caps_get_free_size(MALLOC_CAP_INTERNAL) + s_reclaimable + s_sdReclaim;
-    size_t bytes = avail > s_headroom ? avail - s_headroom : 0;
-    if (bytes > 200 * 1024) bytes = 200 * 1024;
+    // Streaming keeps the card, so its buffers are not ours to count.
+    size_t avail = heap_caps_get_free_size(MALLOC_CAP_INTERNAL) + s_reclaimable +
+                   (s_streaming ? 0 : s_sdReclaim);
+    size_t bytes = avail > headroom() ? avail - headroom() : 0;
+    size_t cap = s_streaming ? STREAM_RING_BYTES : 200 * 1024;
+    if (bytes > cap) bytes = cap;
     return bytes / sizeof(int16_t);
 }
 
@@ -76,12 +91,16 @@ bool allocBuffer() {
     // rather than the total, or a fragmented heap fails a request that "fits".
     size_t total = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    size_t budget = total > s_headroom ? total - s_headroom : 0;
+    size_t budget = total > headroom() ? total - headroom() : 0;
     size_t bytes = largest < budget ? largest : budget;
-    if (bytes > 200 * 1024) bytes = 200 * 1024;
+    size_t cap = s_streaming ? STREAM_RING_BYTES : 200 * 1024;
+    if (bytes > cap) bytes = cap;
 
-    // Back off rather than give up: a shorter memo beats no memo.
-    while (bytes >= s_rate * sizeof(int16_t)) {
+    // Back off rather than give up: a shorter memo beats no memo. A streaming
+    // ring only has to outlast one card write, so it may go far smaller.
+    size_t floorBytes = s_streaming ? chunkSamples() * 4 * sizeof(int16_t)
+                                    : s_rate * sizeof(int16_t);
+    while (bytes >= floorBytes) {
         s_buf = (int16_t*)malloc(bytes);
         if (s_buf) {
             // Round down to whole chunks: the ring indexes by modulo, so a
@@ -159,10 +178,10 @@ bool micOn() {
     // early-returns, and record() quietly returns false forever. Ask the driver.
     if (s_haveI2S && s_micOwnsI2S && M5Cardputer.Mic.isRunning()) return true;
 
-    // Only unmount the card if this board has actually been shown to need it.
-    // Doing it unconditionally is what made streaming a recording to the card
-    // impossible, since claiming the microphone threw the filesystem away.
-    if (store::audioConflicts()) store::sdRelease();
+    // Unmounting hands back ~28KB of driver and FATFS buffers, which is most of
+    // a second of recording on a board with no PSRAM -- so do it unless this
+    // recording is streaming to the card and actually needs the filesystem.
+    if (!s_streaming || store::audioConflicts()) store::sdRelease();
     // tone() is asynchronous; ending the port underneath a playing buffer is
     // what leaves the channel half-torn-down for the next begin().
     if (M5Cardputer.Speaker.isPlaying()) {

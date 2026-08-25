@@ -211,7 +211,7 @@ static void testTheme() {
     if (store::sdReady()) {
         String path = String(store::REC_DIR) + "/selftest.wav";
         check(store::wavOpen(path), "streaming wav opens");
-        static int16_t tone[160];
+        int16_t tone[160];
         for (int i = 0; i < 160; i++) tone[i] = (int16_t)(i * 200 - 16000);
         check(store::wavAppend(tone, 160), "first chunk appends");
         check(store::wavAppend(tone, 160), "second chunk appends");
@@ -372,7 +372,7 @@ static void testAudio() {
     {
         // One real block through the hardware. Silence is fine here -- a bench
         // is quiet -- but a refused read is not.
-        static int16_t probe[512];
+        int16_t probe[512];
         check(audio::sampleOnce(probe, 512), "a raw block reads back from the mic");
     }
 

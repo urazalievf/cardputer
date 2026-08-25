@@ -442,20 +442,24 @@ static Result cloudWhisper(Stt which, const int16_t* pcm, size_t samples,
     if (wavPath.length()) {
         // Straight off the card, 2KB at a time: the header is already the first
         // 44 bytes of the file.
-        static uint8_t io[2048];
+        // Heap, not .bss: this lives only for the upload, and a permanent
+        // buffer is permanently unavailable to the capture ring.
+        uint8_t* io = (uint8_t*)malloc(2048);
+        if (!io) { f.close(); client.stop(); r.error = "no room to upload"; return r; }
         size_t sent = 0;
         while (sent < fileBytes) {
-            int got = f.read(io, sizeof(io));
+            int got = f.read(io, 2048);
             if (got <= 0) break;
             if (sent + got > fileBytes) got = fileBytes - sent;
             int off = 0;
             while (off < got) {
                 size_t w = client.write(io + off, got - off);
-                if (!w) { f.close(); client.stop(); r.error = "upload failed"; return r; }
+                if (!w) { free(io); f.close(); client.stop(); r.error = "upload failed"; return r; }
                 off += w;
             }
             sent += got;
         }
+        free(io);
         f.close();
         if (sent != fileBytes) { client.stop(); r.error = "short read from card"; return r; }
     } else {

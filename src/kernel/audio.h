@@ -16,6 +16,19 @@ void     setSampleRate(uint32_t hz);
 // wants ~45KB; the Mac daemon over plain HTTP wants almost nothing.
 void     setHeadroomBytes(size_t bytes);
 
+// Declare that this recording streams to the card, which changes the memory
+// trade completely and in both directions.
+//
+// Not streaming: the card is unmounted when the microphone starts, handing back
+// ~28KB of driver and FATFS buffers -- nearly a second of extra recording, and
+// the whole budget on a board this tight. Every byte is length.
+//
+// Streaming: the card must stay mounted, so that 28KB is gone; but the ring
+// only has to cover how long one SD write takes, and it is freed before the
+// upload's TLS handshake, so it needs neither the size nor the headroom.
+void     setStreaming(bool on);
+bool     streaming();
+
 // Memory the mounted SD driver is holding that recording will free anyway,
 // because claiming the microphone unmounts the card (shared GPIO40).
 void     setSdReclaimable(size_t bytes);

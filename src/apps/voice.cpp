@@ -196,7 +196,9 @@ private:
     // Proving the microphone works costs one 512-sample block and no heap, so
     // it stays usable on a board too full to allocate a real capture buffer.
     void checkTick() {
-        static int16_t buf[512];
+        // On the stack: a kilobyte held permanently in .bss is a kilobyte off
+        // every recording, and this runs from the event loop's 8KB.
+        int16_t buf[512];
         if (!audio::sampleOnce(buf, 512)) { checkOk_ = false; os::invalidate(); return; }
         checkOk_ = true;
         uint64_t sum = 0;
@@ -279,10 +281,16 @@ private:
             }
         }
 
+        // Tell the audio layer which memory trade to make before it claims the
+        // microphone: streaming keeps the card and needs a small ring, RAM
+        // recording unmounts it and wants every byte.
+        audio::setStreaming(streaming_);
+
         if (!audio::recordStart()) {
             // Every failure used to surface as "not enough memory"; say which
             // one it actually was, because the two have different fixes.
             if (streaming_) { store::wavAbort(); streaming_ = false; wavPath_ = ""; }
+            audio::setStreaming(false);
             os::toast(audio::startError(), os::Tone::Bad);
             ui::acquireCanvas();
             mode_ = IDLE;
@@ -298,6 +306,7 @@ private:
             store::wavAbort();
             streaming_ = false;
             wavPath_ = "";
+            audio::setStreaming(false);
             os::logf("voice: mic unmounted the card, recording to RAM");
         }
 

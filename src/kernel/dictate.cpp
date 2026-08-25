@@ -44,9 +44,11 @@ Result run(const String& title, ui::Icon icon) {
 
     ui::releaseCanvas();
     if (theme::sounds()) audio::chirpOk();
+    audio::setStreaming(streaming);
 
     if (!audio::recordStart()) {
         if (streaming) store::wavAbort();
+        audio::setStreaming(false);
         ui::acquireCanvas();
         out.error = audio::startError();
         return out;
@@ -54,6 +56,7 @@ Result run(const String& title, ui::Icon icon) {
     if (streaming && !store::sdMounted()) {
         store::wavAbort();
         streaming = false;
+        audio::setStreaming(false);
     }
 
     // The key that started this is still down. Arm the stop only once every key
@@ -126,6 +129,7 @@ Result run(const String& title, ui::Icon icon) {
         }
     }
 
+    audio::setStreaming(false);
     out.ok = r.ok;
     out.text = r.text;
     out.error = r.error;
