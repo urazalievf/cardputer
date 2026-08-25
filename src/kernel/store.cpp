@@ -19,6 +19,11 @@ static bool s_cardPresent = false;  // a card mounted successfully at least once
 static uint64_t s_sizeMB = 0, s_usedMB = 0;
 static uint32_t s_lastFail = 0;
 static bool s_usbOwned = false;
+// Latched only if a mount is proved to need audio out of the way. See
+// audioConflicts() in the header for why this starts false.
+static bool s_audioConflicts = false;
+
+bool audioConflicts() { return s_audioConflicts; }
 
 void begin() {
     prefs.begin("cfg", false);
@@ -68,6 +73,7 @@ void factoryReset() {
 
 // ---------------- SD ----------------
 bool sdReady() { return s_cardPresent; }
+bool sdMounted() { return s_mounted; }
 
 // Measured: mounting costs ~29KB of driver, FATFS and VFS structures.
 static const size_t SD_DRIVER_BYTES = 28 * 1024;
@@ -87,6 +93,16 @@ void setUsbOwned(bool owned) {
 }
 bool usbOwned() { return s_usbOwned; }
 
+// One mount attempt at two speeds. 25MHz suits most cards; some older ones only
+// enumerate slower.
+static bool mountOnce() {
+    SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+    if (SD.begin(SD_CS, SPI, 25000000)) return true;
+    if (SD.begin(SD_CS, SPI, 4000000)) return true;
+    SPI.end();
+    return false;
+}
+
 bool sdAcquire(bool force) {
     if (s_usbOwned) return false;   // the Mac has it
     if (s_mounted) return true;
@@ -94,12 +110,27 @@ bool sdAcquire(bool force) {
     // every listNotes() on a card-less device pays that, which reads as lag.
     // Explicit remounts from the UI pass force=true.
     if (!force && s_lastFail && millis() - s_lastFail < 3000) return false;
-    // Evict audio: the I2S bit clock and the SD clock are both GPIO40.
-    audio::releaseI2S();
-    SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
-    // 25MHz suits most cards; some older ones only enumerate slower.
-    s_mounted = SD.begin(SD_CS, SPI, 25000000);
-    if (!s_mounted) s_mounted = SD.begin(SD_CS, SPI, 4000000);
+
+    // Try to coexist with a live microphone before evicting it. Nothing in the
+    // audio path shares a pin with the SD bus on this board, and evicting it to
+    // write a file is exactly what stops a recording from streaming to the card.
+    // If this board disagrees the eviction below still runs, and we remember.
+    bool audioLive = audio::ownsI2S();
+    if (!audioLive) {
+        s_mounted = mountOnce();
+    } else {
+        if (!s_audioConflicts) s_mounted = mountOnce();
+        if (!s_mounted) {
+            audio::releaseI2S();
+            s_mounted = mountOnce();
+            if (s_mounted && !s_audioConflicts) {
+                // It would only mount once audio let go. Believe the board over
+                // the pinout and stop trying to coexist from here on.
+                s_audioConflicts = true;
+                os::logf("sd: mounts only with audio released - streaming off");
+            }
+        }
+    }
     if (s_mounted) {
         if (!s_cardPresent) {
             uint8_t type = SD.cardType();
@@ -119,7 +150,6 @@ bool sdAcquire(bool force) {
         // library mounts FAT16/FAT32 only, and any card 64GB+ ships exFAT.
         // Watch the serial log for "no valid FAT volume" to tell them apart.
         os::logf("sd: mount failed - card absent, or not FAT32 (exFAT/NTFS won't mount)");
-        SPI.end();
     }
     return s_mounted;
 }
@@ -428,6 +458,70 @@ bool writeWav(const String& path, const int16_t* pcm, size_t samples) {
     f.close();
     os::logf("saved %s (%u KB)", path.c_str(), (unsigned)((44 + pcmBytes) / 1024));
     return true;
+}
+
+// ---------------- streaming WAV ----------------
+// Held open across a whole recording. The header is written with placeholder
+// lengths and patched on close, because the length is not known until then.
+static File   s_wav;
+static bool   s_wavOpen = false;
+static size_t s_wavSamples = 0;
+static String s_wavPath;
+
+bool wavOpenNow() { return s_wavOpen; }
+size_t wavSamples() { return s_wavSamples; }
+
+bool wavOpen(const String& path) {
+    if (s_wavOpen) wavAbort();
+    if (!sdAcquire()) return false;
+    ensureDir(REC_DIR);
+    s_wav = SD.open(path, FILE_WRITE);
+    if (!s_wav) return false;
+
+    uint8_t hdr[44];
+    audio::wavHeader(hdr, 0);          // patched by wavClose()
+    if (s_wav.write(hdr, 44) != 44) { s_wav.close(); return false; }
+    s_wavOpen = true;
+    s_wavSamples = 0;
+    s_wavPath = path;
+    return true;
+}
+
+bool wavAppend(const int16_t* pcm, size_t samples) {
+    if (!s_wavOpen || !pcm || !samples) return false;
+    const uint8_t* p = (const uint8_t*)pcm;
+    size_t bytes = samples * sizeof(int16_t), off = 0;
+    while (off < bytes) {
+        size_t n = bytes - off;
+        if (n > 4096) n = 4096;
+        size_t w = s_wav.write(p + off, n);
+        if (w != n) { os::logf("wav: short write at %u", (unsigned)off); return false; }
+        off += w;
+    }
+    s_wavSamples += samples;
+    return true;
+}
+
+bool wavClose() {
+    if (!s_wavOpen) return false;
+    s_wavOpen = false;
+    size_t pcmBytes = s_wavSamples * sizeof(int16_t);
+    uint8_t hdr[44];
+    audio::wavHeader(hdr, pcmBytes);
+    // Rewind and lay the real lengths over the placeholder.
+    if (s_wav.seek(0)) s_wav.write(hdr, 44);
+    s_wav.close();
+    os::logf("wav: %s closed, %u samples (%u KB)", s_wavPath.c_str(),
+             (unsigned)s_wavSamples, (unsigned)((44 + pcmBytes) / 1024));
+    return s_wavSamples > 0;
+}
+
+void wavAbort() {
+    if (!s_wavOpen) return;
+    s_wavOpen = false;
+    s_wav.close();
+    removeFile(s_wavPath);
+    s_wavSamples = 0;
 }
 
 String newRecordingName() {

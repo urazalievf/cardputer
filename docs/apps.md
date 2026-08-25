@@ -31,13 +31,20 @@ buffer allocated and shows the live level and the running peak, which separates
 the three things that used to look identical: the I2S port refusing to start,
 the port running but hearing nothing, and a recording that was genuinely brief.
 
-The audio itself is written to `/recordings/<timestamp>.wav` as soon as
-recording stops -- before transcription, so a failed or unconfigured
-speech-to-text backend never costs you the recording. Saving the transcript as
-a note adds a link back to the wav. Turn it off with Settings > Keep audio.
+The audio goes to `/recordings/<timestamp>.wav`. With a card present it is
+written *as it is captured*, so the length is bounded by the card and a ten
+minute cap rather than by free RAM — the ~4 second ceiling was the largest free
+heap block, and nothing else. The capture buffer is a ring; each completed chunk
+is appended to the open file and its space reused. Transcription then uploads
+straight off the filesystem, because a minute of 16kHz audio is roughly 2MB and
+never fits in memory at once.
 
-Recording length depends on free RAM. The UI canvas is released first to make
-room, which is what buys ~4 seconds on a board with no PSRAM.
+Without a card, capture stays in RAM and stops when the ring is full, which is
+the old behaviour. Settings > Keep audio turns the file off entirely and forces
+the RAM path.
+
+Saving the transcript as a note adds a link back to the wav. Playback (`P`) only
+offers itself for RAM recordings — a streamed one is on the card, not in memory.
 
 ## Ask
 `TAB` is the whole point: record, transcribe and send in one press. History

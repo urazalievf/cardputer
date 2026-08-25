@@ -28,6 +28,9 @@ static void check(bool ok, const String& what) {
     else    { s_fail++; os::logf("   FAIL  %s", what.c_str()); }
 }
 
+// Neither a pass nor a fail: a test that could not run on this hardware.
+static void note(const String& what) { os::logf("   SKIP  %s", what.c_str()); }
+
 static void closeTo(double got, double want, const String& what) {
     check(fabs(got - want) < 1e-6, what + "  (got " + String(got, 6) + ")");
 }
@@ -204,6 +207,28 @@ static void testTheme() {
     // and the geometry it reports is then uninitialised memory. Record what it
     // claims rather than asserting on it -- the format path deliberately goes
     // through SD.begin() instead, which reports failure honestly.
+    group("streaming wav");
+    if (store::sdReady()) {
+        String path = String(store::REC_DIR) + "/selftest.wav";
+        check(store::wavOpen(path), "streaming wav opens");
+        static int16_t tone[160];
+        for (int i = 0; i < 160; i++) tone[i] = (int16_t)(i * 200 - 16000);
+        check(store::wavAppend(tone, 160), "first chunk appends");
+        check(store::wavAppend(tone, 160), "second chunk appends");
+        check(store::wavSamples() == 320, "sample count tracks the appends");
+        check(store::wavClose(), "close patches the header");
+        // 44-byte header plus 320 16-bit samples.
+        check(store::exists(path), "the file is on the card");
+        auto entries = store::listDir(store::REC_DIR);
+        size_t size = 0;
+        for (auto& e : entries) if (e.name == "selftest.wav") size = e.size;
+        check(size == 44 + 320 * 2, String("file is ") + (int)size + " bytes, expected 684");
+        store::removeFile(path);
+        check(!store::exists(path), "cleaned up");
+    } else {
+        note("no card - streaming wav tests skipped");
+    }
+
     group("sd hardware");
     {
         SPI.begin(40, 39, 14, 12);
@@ -323,6 +348,42 @@ static void testAudio() {
     check(planned > audio::sampleRate(), "planned capacity is over one second");
     check(!audio::bufferHeld(), "buffer is not held at rest");
     check(audio::stopReason() == audio::Stop::None, "no stale stop reason at rest");
+
+    group("continuous capture");
+    // The bug this guards: one queued slot at a time left mic_task blocked on
+    // an empty queue during every repaint, so a quarter of the audio was never
+    // read and Whisper answered the wreckage with "you".
+    if (audio::recordStart()) {
+        check(M5Cardputer.Mic.isRecording() > 0, "a request is in flight before the first chunk");
+        int chunks = 0;
+        bool everStarved = false;
+        uint32_t t0 = millis();
+        while (chunks < 8 && millis() - t0 < 4000) {
+            if (!audio::recordChunk()) break;
+            // This is the moment the old code went deaf: analysis done, caller
+            // about to draw. Something must still be queued.
+            if (M5Cardputer.Mic.isRecording() == 0) everStarved = true;
+            chunks++;
+            delay(25);                      // stand in for a repaint
+        }
+        check(chunks >= 8, String("captured ") + chunks + " chunks");
+        check(!everStarved, "the driver queue never runs dry between chunks");
+        check(audio::recordedSeconds() > 0.7f, "chunks accumulate into a real duration");
+        audio::recordStop();
+        check(audio::recordedSamples() >= (size_t)chunks * (audio::sampleRate() / 10),
+              "in-flight chunks are counted, not discarded");
+        audio::freeBuffer();
+    } else {
+        check(false, String("recordStart failed: ") + audio::startError());
+    }
+
+    group("capture ring");
+    check(audio::pendingChunk(nullptr) == nullptr, "nothing pending once the buffer is freed");
+    if (audio::allocBuffer()) {
+        check(audio::capacitySamples() % (audio::sampleRate() / 10) == 0,
+              "capacity is a whole number of chunks, so the ring cannot straddle");
+        audio::freeBuffer();
+    }
 
     // Must succeed even with the canvas still up: allocation has to size
     // itself against memory that is actually free, not memory it hopes for.

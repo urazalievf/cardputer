@@ -6,6 +6,7 @@
 #include <HTTPClient.h>
 #include <ESPmDNS.h>
 #include <ArduinoJson.h>
+#include <SD.h>
 
 namespace cloud {
 
@@ -131,18 +132,32 @@ Result hostPost(const String& path, const String& body, uint32_t timeoutMs) {
     return r;
 }
 
-Result hostTranscribe(const int16_t* pcm, size_t samples) {
+static Result hostTranscribeSrc(const int16_t* pcm, size_t samples, const String& path) {
     Result r;
     String host = store::getStr(store::K_HOST, "");
     if (!host.length()) { r.error = "no host"; return r; }
     int port = store::getInt(store::K_HOST_PORT, 8787);
+
+    File f;
+    size_t fileBytes = 0;
+    if (path.length()) {
+        if (!store::sdAcquire()) { r.error = "no card"; return r; }
+        f = SD.open(path, FILE_READ);
+        if (!f) { r.error = "cannot read " + path; return r; }
+        fileBytes = f.size();
+        if (fileBytes <= 44) { f.close(); r.error = "recording is empty"; return r; }
+    }
 
     size_t pcmBytes = samples * sizeof(int16_t);
     uint8_t hdr[44];
     audio::wavHeader(hdr, pcmBytes);
 
     WiFiClient client;
-    if (!client.connect(host.c_str(), port, 4000)) { r.error = "host unreachable"; return r; }
+    if (!client.connect(host.c_str(), port, 4000)) {
+        if (f) f.close();
+        r.error = "host unreachable";
+        return r;
+    }
 
     client.printf("POST /transcribe HTTP/1.1\r\nHost: %s\r\n", host.c_str());
     String token = store::getStr("hosttoken", "");
@@ -152,16 +167,36 @@ Result hostTranscribe(const int16_t* pcm, size_t samples) {
         client.print("\r\n");
     }
     client.print("Content-Type: audio/wav\r\n");
-    client.printf("Content-Length: %u\r\nConnection: close\r\n\r\n", (unsigned)(44 + pcmBytes));
-    client.write(hdr, 44);
+    size_t bodyLen = path.length() ? fileBytes : 44 + pcmBytes;
+    client.printf("Content-Length: %u\r\nConnection: close\r\n\r\n", (unsigned)bodyLen);
 
-    const uint8_t* p = (const uint8_t*)pcm;
-    size_t off = 0;
-    while (off < pcmBytes) {
-        size_t n = min((size_t)2048, pcmBytes - off);
-        size_t w = client.write(p + off, n);
-        if (!w) { client.stop(); r.error = "upload failed"; return r; }
-        off += w;
+    if (path.length()) {
+        static uint8_t io[2048];
+        size_t sent = 0;
+        while (sent < fileBytes) {
+            int got = f.read(io, sizeof(io));
+            if (got <= 0) break;
+            if (sent + got > fileBytes) got = fileBytes - sent;
+            int off = 0;
+            while (off < got) {
+                size_t w = client.write(io + off, got - off);
+                if (!w) { f.close(); client.stop(); r.error = "upload failed"; return r; }
+                off += w;
+            }
+            sent += got;
+        }
+        f.close();
+        if (sent != fileBytes) { client.stop(); r.error = "short read from card"; return r; }
+    } else {
+        client.write(hdr, 44);
+        const uint8_t* p = (const uint8_t*)pcm;
+        size_t off = 0;
+        while (off < pcmBytes) {
+            size_t n = min((size_t)2048, pcmBytes - off);
+            size_t w = client.write(p + off, n);
+            if (!w) { client.stop(); r.error = "upload failed"; return r; }
+            off += w;
+        }
     }
 
     uint32_t start = millis();
@@ -192,6 +227,14 @@ Result hostTranscribe(const int16_t* pcm, size_t samples) {
     r.text = payload;
     if (!r.ok) r.error = "empty transcript";
     return r;
+}
+
+Result hostTranscribe(const int16_t* pcm, size_t samples) {
+    return hostTranscribeSrc(pcm, samples, String());
+}
+
+Result hostTranscribeFile(const String& path) {
+    return hostTranscribeSrc(nullptr, 0, path);
 }
 
 Result code(const String& prompt, const String& project, const String& backend) {

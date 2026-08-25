@@ -33,6 +33,8 @@ std::vector<String> hostBackends();
 
 Result hostPost(const String& path, const String& jsonBody, uint32_t timeoutMs = 120000);
 Result hostTranscribe(const int16_t* pcm, size_t samples);
+// Same endpoint, but the WAV is streamed off the card rather than out of RAM.
+Result hostTranscribeFile(const String& path);
 
 // A coding agent with real tools, in a real project directory.
 Result code(const String& prompt, const String& project = "", const String& backend = "");

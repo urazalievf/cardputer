@@ -75,5 +75,8 @@ void setPreferredStt(Stt s);
 bool sttConfigured(Stt s);
 const char* sttSetupHint(Stt s);
 Result transcribe(const int16_t* pcm, size_t samples);
+// Transcribe a WAV already on the card. A streamed recording is far larger than
+// the free heap, so it is uploaded straight off the filesystem.
+Result transcribeFile(const String& path);
 
 }  // namespace ai

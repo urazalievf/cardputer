@@ -3,6 +3,7 @@
 #include "net.h"
 #include "cloud.h"
 #include "audio.h"
+#include <SD.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
@@ -382,7 +383,11 @@ bool sttConfigured(Stt s) {
 }
 
 // Multipart upload streamed by hand: the whole body would never fit in RAM.
-static Result cloudWhisper(Stt which, const int16_t* pcm, size_t samples) {
+// The audio is either the live capture buffer (which needs a WAV header put in
+// front of it) or a file already on the card that has one -- a streamed memo is
+// bigger than the heap, so it never passes through RAM in one piece.
+static Result cloudWhisper(Stt which, const int16_t* pcm, size_t samples,
+                           const String& wavPath = String()) {
     Result r;
     const bool groq = which == Stt::Groq;
     const char* host = groq ? "api.groq.com" : "api.openai.com";
@@ -391,6 +396,16 @@ static Result cloudWhisper(Stt which, const int16_t* pcm, size_t samples) {
     String key = store::getStr(groq ? "k_groq" : "k_openai", "");
     if (!key.length()) { r.error = String("no ") + (groq ? "Groq" : "OpenAI") + " key"; return r; }
     if (!net::connected()) { r.error = "wifi off"; return r; }
+
+    File f;
+    size_t fileBytes = 0;
+    if (wavPath.length()) {
+        if (!store::sdAcquire()) { r.error = "no card"; return r; }
+        f = SD.open(wavPath, FILE_READ);
+        if (!f) { r.error = "cannot read " + wavPath; return r; }
+        fileBytes = f.size();
+        if (fileBytes <= 44) { f.close(); r.error = "recording is empty"; return r; }
+    }
 
     size_t pcmBytes = samples * sizeof(int16_t);
     const char* boundary = "----CardputerOSBoundary7MA4YWxkTrZ";
@@ -405,28 +420,54 @@ static Result cloudWhisper(Stt which, const int16_t* pcm, size_t samples) {
 
     uint8_t hdr[44];
     audio::wavHeader(hdr, pcmBytes);
-    size_t bodyLen = pre.length() + 44 + pcmBytes + tail.length();
+    size_t audioLen = wavPath.length() ? fileBytes : 44 + pcmBytes;
+    size_t bodyLen = pre.length() + audioLen + tail.length();
 
     WiFiClientSecure client;
     client.setInsecure();
     client.setHandshakeTimeout(20);
     client.setTimeout(60);
-    if (!client.connect(host, 443)) { r.error = "tls connect failed"; return r; }
+    if (!client.connect(host, 443)) {
+        if (f) f.close();
+        r.error = "tls connect failed";
+        return r;
+    }
 
     client.printf("POST %s HTTP/1.1\r\nHost: %s\r\n", path, host);
     client.print("Authorization: Bearer "); client.print(key); client.print("\r\n");
     client.printf("Content-Type: multipart/form-data; boundary=%s\r\n", boundary);
     client.printf("Content-Length: %u\r\nConnection: close\r\n\r\n", (unsigned)bodyLen);
     client.print(pre);
-    client.write(hdr, 44);
 
-    const uint8_t* p = (const uint8_t*)pcm;
-    size_t off = 0;
-    while (off < pcmBytes) {
-        size_t n = min((size_t)2048, pcmBytes - off);
-        size_t w = client.write(p + off, n);
-        if (!w) { client.stop(); r.error = "upload failed"; return r; }
-        off += w;
+    if (wavPath.length()) {
+        // Straight off the card, 2KB at a time: the header is already the first
+        // 44 bytes of the file.
+        static uint8_t io[2048];
+        size_t sent = 0;
+        while (sent < fileBytes) {
+            int got = f.read(io, sizeof(io));
+            if (got <= 0) break;
+            if (sent + got > fileBytes) got = fileBytes - sent;
+            int off = 0;
+            while (off < got) {
+                size_t w = client.write(io + off, got - off);
+                if (!w) { f.close(); client.stop(); r.error = "upload failed"; return r; }
+                off += w;
+            }
+            sent += got;
+        }
+        f.close();
+        if (sent != fileBytes) { client.stop(); r.error = "short read from card"; return r; }
+    } else {
+        client.write(hdr, 44);
+        const uint8_t* p = (const uint8_t*)pcm;
+        size_t off = 0;
+        while (off < pcmBytes) {
+            size_t n = min((size_t)2048, pcmBytes - off);
+            size_t w = client.write(p + off, n);
+            if (!w) { client.stop(); r.error = "upload failed"; return r; }
+            off += w;
+        }
     }
     client.print(tail);
 
@@ -455,14 +496,15 @@ static Result cloudWhisper(Stt which, const int16_t* pcm, size_t samples) {
     return r;
 }
 
-Result transcribe(const int16_t* pcm, size_t samples) {
+static Result transcribeSrc(const int16_t* pcm, size_t samples, const String& path) {
     Result r;
-    if (samples == 0) { r.error = "nothing recorded"; return r; }
+    if (!path.length() && samples == 0) { r.error = "nothing recorded"; return r; }
 
     Stt first = preferredStt();
     auto attempt = [&](Stt s) -> Result {
         if (s == Stt::Host) {
-            auto hostRes = cloud::hostTranscribe(pcm, samples);
+            auto hostRes = path.length() ? cloud::hostTranscribeFile(path)
+                                         : cloud::hostTranscribe(pcm, samples);
             Result out;
             out.ok = hostRes.ok;
             out.text = hostRes.text;
@@ -470,7 +512,7 @@ Result transcribe(const int16_t* pcm, size_t samples) {
             out.used = Provider::Host;
             return out;
         }
-        return cloudWhisper(s, pcm, samples);
+        return cloudWhisper(s, pcm, samples, path);
     };
 
     if (sttConfigured(first)) {
@@ -485,6 +527,14 @@ Result transcribe(const int16_t* pcm, size_t samples) {
     }
     if (!r.error.length()) r.error = "no speech-to-text configured";
     return r;
+}
+
+Result transcribe(const int16_t* pcm, size_t samples) {
+    return transcribeSrc(pcm, samples, String());
+}
+
+Result transcribeFile(const String& path) {
+    return transcribeSrc(nullptr, 0, path);
 }
 
 }  // namespace ai

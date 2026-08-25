@@ -97,6 +97,27 @@ void  waveClear();
 const int16_t* pcm();
 void clear();
 
+// ---- streaming ----
+// The capture buffer is a ring. Nothing drains it by default, so it fills and
+// stops exactly as a plain linear buffer would -- but a caller that writes each
+// chunk to the card as it arrives lifts the recording clean off the RAM
+// ceiling, which is what caps a memo at four seconds otherwise.
+//
+// pendingChunk() hands back the oldest captured-but-unreleased chunk;
+// releaseChunk() says it is safely on disk and its space may be reused.
+const int16_t* pendingChunk(size_t* samples);
+void   releaseChunk();
+size_t pendingChunks();
+
+// Total samples captured this recording, including any already written out and
+// dropped from the ring. recordedSamples() is what is still in memory.
+size_t capturedSamples();
+float  capturedSeconds();
+
+// True once the ring has wrapped, i.e. pcm() no longer holds the whole
+// recording and only the streamed file does.
+bool   wrapped();
+
 // 44-byte canonical PCM WAV header for `pcmBytes` of 16-bit mono audio.
 size_t wavHeader(uint8_t* out, size_t pcmBytes);
 

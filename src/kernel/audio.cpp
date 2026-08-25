@@ -11,6 +11,8 @@ static size_t   s_used = 0;
 static bool     s_micReady = false;
 static bool     s_recording = false;
 static size_t   s_submitted = 0;   // samples handed to the driver
+static size_t   s_released = 0;    // samples written out and free to overwrite
+static bool     s_wrapped = false;
 static float    s_level = 0.0f;
 static bool     s_micOwnsI2S = false;
 
@@ -80,7 +82,14 @@ bool allocBuffer() {
     // Back off rather than give up: a shorter memo beats no memo.
     while (bytes >= s_rate * sizeof(int16_t)) {
         s_buf = (int16_t*)malloc(bytes);
-        if (s_buf) { s_cap = bytes / sizeof(int16_t); return true; }
+        if (s_buf) {
+            // Round down to whole chunks: the ring indexes by modulo, so a
+            // capacity that is not a multiple of the chunk size would let a
+            // request straddle the wrap and scribble over the start.
+            size_t chunk = chunkSamples();
+            s_cap = (bytes / sizeof(int16_t)) / chunk * chunk;
+            return s_cap > 0;
+        }
         bytes = bytes / 4 * 3;
     }
     s_cap = 0;
@@ -149,7 +158,10 @@ bool micOn() {
     // early-returns, and record() quietly returns false forever. Ask the driver.
     if (s_haveI2S && s_micOwnsI2S && M5Cardputer.Mic.isRunning()) return true;
 
-    store::sdRelease();
+    // Only unmount the card if this board has actually been shown to need it.
+    // Doing it unconditionally is what made streaming a recording to the card
+    // impossible, since claiming the microphone threw the filesystem away.
+    if (store::audioConflicts()) store::sdRelease();
     // tone() is asynchronous; ending the port underneath a playing buffer is
     // what leaves the channel half-torn-down for the next begin().
     if (M5Cardputer.Speaker.isPlaying()) {
@@ -181,7 +193,7 @@ bool micOn() {
 
 void speakerOn() {
     if (s_haveI2S && !s_micOwnsI2S && M5Cardputer.Speaker.isRunning()) return;
-    store::sdRelease();
+    if (store::audioConflicts()) store::sdRelease();
     M5Cardputer.Mic.end();
     delay(60);
     M5Cardputer.Speaker.begin();
@@ -210,9 +222,16 @@ void waveClear() {
 // blocks: Mic.record() only waits when both slots are busy, and this checks.
 static bool topUp() {
     if (!s_buf) return false;
-    while (M5Cardputer.Mic.isRecording() < 2 && s_submitted + chunkSamples() <= s_cap) {
-        if (!M5Cardputer.Mic.record(s_buf + s_submitted, chunkSamples(), s_rate)) return false;
-        s_submitted += chunkSamples();
+    const size_t chunk = chunkSamples();
+    // Only submit into space that has been written out (or was never claimed).
+    // With nothing draining, s_released stays 0 and this stops at s_cap, which
+    // is exactly how a plain linear buffer behaves.
+    while (M5Cardputer.Mic.isRecording() < 2 &&
+           s_submitted + chunk <= s_released + s_cap) {
+        int16_t* dst = s_buf + (s_submitted % s_cap);
+        if (!M5Cardputer.Mic.record(dst, chunk, s_rate)) return false;
+        s_submitted += chunk;
+        if (s_submitted > s_cap) s_wrapped = true;
     }
     return true;
 }
@@ -237,6 +256,8 @@ bool recordStart() {
     }
     s_used = 0;
     s_submitted = 0;
+    s_released = 0;
+    s_wrapped = false;
     s_level = 0.0f;
     // Not s_micReady: that is a cached verdict. This has to be true right now.
     s_recording = M5Cardputer.Mic.isRunning();
@@ -304,13 +325,15 @@ bool recordChunk() {
     }
 
     // Envelope in SUBS slices so the waveform scrolls smoothly, plus the
-    // whole-chunk RMS for the coarse level readout.
+    // whole-chunk RMS for the coarse level readout. Chunks are ring-aligned, so
+    // one chunk never straddles the wrap and this base is enough.
+    const int16_t* chunkAt = s_buf + (s_used % s_cap);
     const size_t sub = chunkSamples() / SUBS;
     uint64_t total = 0;
     for (int s = 0; s < SUBS; s++) {
         uint64_t sum = 0;
         for (size_t i = 0; i < sub; i++) {
-            int32_t v = s_buf[s_used + s * sub + i];
+            int32_t v = chunkAt[s * sub + i];
             sum += (uint64_t)(v * v);
         }
         total += sum;
@@ -324,7 +347,7 @@ bool recordChunk() {
     // Peak, not RMS: it is the one number that separates "the room was quiet"
     // from "the microphone handed us a buffer of zeroes".
     for (size_t i = 0; i < chunkSamples(); i++) {
-        int32_t v = s_buf[s_used + i];
+        int32_t v = chunkAt[i];
         if (v < 0) v = -v;
         float f = (float)v / 32767.0f;
         if (f > s_peak) s_peak = f;
@@ -350,6 +373,25 @@ bool sampleOnce(int16_t* buf, size_t samples) {
     return true;
 }
 
+// The oldest chunk that has been captured and analysed but not yet written out.
+const int16_t* pendingChunk(size_t* samples) {
+    if (!s_buf || s_released >= s_used) return nullptr;
+    if (samples) *samples = chunkSamples();
+    return s_buf + (s_released % s_cap);
+}
+
+void releaseChunk() {
+    if (s_released < s_used) s_released += chunkSamples();
+}
+
+size_t pendingChunks() {
+    return s_used > s_released ? (s_used - s_released) / chunkSamples() : 0;
+}
+
+size_t capturedSamples() { return s_used; }
+float  capturedSeconds() { return (float)s_used / s_rate; }
+bool   wrapped() { return s_wrapped; }
+
 void recordStop() {
     if (s_recording) s_stop = Stop::Stopped;
     s_recording = false;
@@ -358,8 +400,9 @@ void recordStop() {
     // often the end of the last word.
     uint32_t deadline = millis() + 400;
     while (M5Cardputer.Mic.isRecording() && millis() < deadline) delay(2);
+    // s_used is a running total across the whole recording, not an index into
+    // the ring, so there is nothing to clamp it against.
     size_t done = completedSamples();
-    if (done > s_cap) done = s_cap;
     if (done > s_used) s_used = done;
 }
 bool recording() { return s_recording; }

@@ -269,10 +269,12 @@ If you would rather use a browser, **Share** also serves a setup form at
 
 ## Hardware notes
 
-No PSRAM, so RAM is the real constraint. The audio buffer is allocated only
-while recording and the UI canvas is released to make room, which is what buys
-a ~4&nbsp;second memo on a board with ~141&nbsp;KB free. BLE is started only
-while the Bluetooth app is open.
+No PSRAM, so RAM is the real constraint — but it no longer caps a recording.
+The capture buffer is a ring, drained to `/recordings/*.wav` as it fills, so a
+memo runs to a ten minute cap instead of the ~4&nbsp;seconds that fitted in the
+largest free heap block, and the upload streams off the card. Without a card it
+falls back to filling the ring once. The UI canvas is still released to make
+room, and BLE is started only while the Bluetooth app is open.
 
 Three Cardputer traps are documented in [docs/hardware.md](docs/hardware.md):
 the microphone and the speaker share **GPIO43**, so only one can be live; the SD
