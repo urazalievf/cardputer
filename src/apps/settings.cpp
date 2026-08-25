@@ -167,6 +167,7 @@ private:
             {INFO,   "Version",     "i_ver"},
             {INFO,   "IP",          "i_ip"},
             {INFO,   "Free heap",   "i_heap"},
+            {INFO,   "Battery",     "i_batt"},
             {INFO,   "Canvas",      "i_canvas"},
             {INFO,   "Mic buffer",  "i_mic"},
             {INFO,   "SD card",     "i_sd"},
@@ -245,6 +246,15 @@ private:
         if (key == "i_ver")    return CARDPUTER_OS_VERSION;
         if (key == "i_ip")     return net::connected() ? net::ip() : String("offline");
         if (key == "i_heap")   return String(ESP.getFreeHeap() / 1024) + "K";
+        if (key == "i_batt") {
+            const hw::Battery& b = hw::battery();
+            if (!b.known) return "unknown";
+            // Both numbers: the filtered one is what the gauge shows, the raw
+            // one is what the ADC just said, and the gap between them is the
+            // whole reason the gauge exists.
+            return String(b.percent) + "%" + (b.charging ? " chg" : "") +
+                   "  (raw " + String(b.raw) + ")";
+        }
         if (key == "i_canvas") return ui::canvasActive() ? "on" : "direct";
         if (key == "i_mic")    return audio::micReady()
                                       ? String((unsigned)audio::capacitySeconds()) + "s max"

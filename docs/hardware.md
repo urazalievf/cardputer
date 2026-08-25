@@ -21,6 +21,24 @@
 
 ## Things that bite
 
+**There is no PMIC, so the battery level is a bare ADC read.** `getBatteryLevel()`
+samples the cell once and scales it `(mV - 3300) * 100 / 800` — one percentage
+point is eight millivolts. WiFi transmit bursts and a charger's switching
+regulator move that rail by tens of millivolts, so an unfiltered reading swings
+ten points while sitting still, worst of all while plugged in. It was also
+recomputed on every status-bar repaint.
+
+`hw::batteryTick()` filters it in three stages: one sample per 250 ms into a
+nine-deep ring, the median of that ring (spikes do not survive a median), an
+exponential average over the medians, and finally a displayed value that moves
+at most one point per sample and only once the average has crossed a dead band.
+The first three samples seed it directly so a boot does not ramp up from zero.
+
+`isCharging()` has no branch for this board and returns `charge_unknown`, so
+charging is inferred from the only thing that is only ever true of a charging
+cell: the level goes up. Judged over a minute, because one point of drift is not
+evidence.
+
 **The microphone and the speaker fight over GPIO43.** Checked against
 M5Unified 0.2.7, `board_M5Cardputer` wires them like this:
 

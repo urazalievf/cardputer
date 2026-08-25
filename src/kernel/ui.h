@@ -32,6 +32,12 @@ void hline(int y, uint16_t color);
 void progress(int x, int y, int w, int h, float frac, uint16_t color);
 void badge(int x, int y, const String& label, uint16_t fg, uint16_t bg);
 
+// A drawn battery: shell, terminal nub, and a fill whose colour runs from the
+// theme's alarm red below a fifth through amber to green at full. Preferred
+// over a number, which implied a precision a bare ADC reading never had.
+void batteryGauge(int x, int y, int w, int h, int percent, bool charging = false);
+uint16_t batteryColor(int percent);
+
 // ---- chrome ----
 // The status bar shows the app icon and title on the left, and live radio /
 // battery / clock state on the right. Toasts temporarily take the whole strip.

@@ -281,6 +281,11 @@ the microphone and the speaker share **GPIO43**, so only one can be live; the SD
 card must be **FAT32** (exFAT enumerates fine and then fails to mount); and
 masking interrupts across an IR frame will hang the device outright.
 
+The status bar draws the battery as a gauge rather than a number: a shell, a
+terminal nub, and a fill that runs from alarm red below a fifth through amber to
+green at full, with a bolt beside it while charging. The exact figure, filtered
+and raw side by side, is in Settings > Battery.
+
 A fourth is worth naming here because it cost the microphone entirely:
 `Mic.isEnabled()` reports whether a data pin is *configured*, not whether the
 capture task is *running*. It is true on a Cardputer from `M5.begin()` onward

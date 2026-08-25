@@ -8,6 +8,7 @@
 #include "audio.h"
 #include "bt.h"
 #include "console.h"
+#include "hw.h"
 #include <stdarg.h>
 #include <esp_heap_caps.h>
 
@@ -62,6 +63,8 @@ void bootReport() {
         logf("sd       NOT MOUNTED - probing to find out why:");
         store::diagnose();
     }
+    logf("battery  %d%% (raw %d)%s", hw::battery().percent, hw::battery().raw,
+         hw::battery().charging ? ", charging" : "");
     logf("wifi     %d saved network(s)", (int)net::savedNetworks().size());
     logf("theme    %s, accent hue %d", theme::presetName(theme::preset()), theme::accentHue());
     logf("ai       default %s, %d provider(s) configured",
@@ -213,6 +216,16 @@ void run() {
     M5Cardputer.update();
     net::tick();
     bt::tick();
+    hw::batteryTick();
+
+    // Drawing is lazy, so the gauge would otherwise hold whatever value it had
+    // when something else last invalidated. The filter only lets it move a
+    // point at a time, so this is at most one repaint every few seconds.
+    static int lastBatt = -1;
+    if (hw::battery().known && hw::battery().percent != lastBatt) {
+        lastBatt = hw::battery().percent;
+        s_dirty = true;
+    }
 
     static bool reported = false;
     if (CONSOLE && !reported)      { reported = true;  bootReport(); }

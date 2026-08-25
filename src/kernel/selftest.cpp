@@ -321,6 +321,43 @@ static void testNet() {
     check(net::signalBars() >= 0 && net::signalBars() <= 4, "signal bars stay in range");
 }
 
+// -------------------------------------------------------------------- battery
+static void testBattery() {
+    group("battery filter");
+    // Let the ring fill: one sample per 250ms, seeded once three have landed.
+    uint32_t t0 = millis();
+    while (millis() - t0 < 900) { hw::batteryTick(); delay(10); }
+
+    const hw::Battery& b = hw::battery();
+    check(b.known, "battery reads");
+    check(b.percent >= 0 && b.percent <= 100, String("filtered level ") + b.percent + "% in range");
+    check(b.raw >= 0 && b.raw <= 100, "raw sample in range");
+
+    // The whole point: a bare ADC read swings ten points at a stand, so the
+    // displayed value must never move more than one point per 250ms sample.
+    int before = b.percent;
+    uint32_t t1 = millis();
+    while (millis() - t1 < 300) { hw::batteryTick(); delay(10); }
+    check(abs(hw::battery().percent - before) <= 1, "moves at most one point per sample");
+
+    // Repeated ticks inside one sample window must not advance it at all.
+    int held = hw::battery().percent;
+    for (int i = 0; i < 50; i++) hw::batteryTick();
+    check(hw::battery().percent == held, "sampling is rate limited, not per call");
+
+    group("battery colour");
+    const auto& pal = theme::cur();
+    check(ui::batteryColor(0)  == pal.bad, "empty is alarm red");
+    check(ui::batteryColor(19) == pal.bad, "just under a fifth is still red");
+    check(ui::batteryColor(20) != pal.bad, "at a fifth it leaves the alarm colour");
+    // RGB565: red is bits 15-11, green bits 10-5.
+    auto red   = [](uint16_t c) { return (c >> 11) & 0x1F; };
+    auto green = [](uint16_t c) { return (c >> 5) & 0x3F; };
+    uint16_t low = ui::batteryColor(25), mid = ui::batteryColor(60), full = ui::batteryColor(100);
+    check(green(full) >= green(mid) && green(mid) >= green(low), "green rises as it fills");
+    check(red(full) <= red(mid) && red(mid) <= red(low), "red falls as it fills");
+}
+
 // ---------------------------------------------------------------------- audio
 static void testAudio() {
     group("audio");
@@ -491,6 +528,7 @@ int run() {
     testTheme();
     testAi();
     testNet();
+    testBattery();
     testAudio();
     testHw();
     testApps();

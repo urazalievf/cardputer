@@ -2,6 +2,7 @@
 #include "net.h"
 #include "bt.h"
 #include "audio.h"
+#include "hw.h"
 #include <M5GFX.h>
 
 namespace ui {
@@ -105,6 +106,40 @@ void badge(int x, int y, const String& label, uint16_t fg, uint16_t bg) {
     int w = textW(label) + 8;
     gfx().fillRoundRect(x, y - 1, w, glyphW() > 6 ? 18 : 11, 3, bg);
     text(x + 4, y + (glyphW() > 6 ? 1 : 1), label, fg);
+}
+
+uint16_t batteryColor(int percent) {
+    // Below a fifth there is only one useful colour, and it is not a gradient.
+    if (percent < 20) return c().bad;
+    // Amber at 20 through green at 100. hueColor's wheel puts red at 0, yellow
+    // near 43 and green near 85.
+    int hue = 25 + (percent - 20) * (85 - 25) / 80;
+    return theme::hueColor((uint8_t)hue, 255, 235);
+}
+
+void batteryGauge(int x, int y, int w, int h, int percent, bool charging) {
+    auto& g = gfx();
+    percent = percent < 0 ? 0 : percent > 100 ? 100 : percent;
+
+    // A charging bolt to the left of the shell rather than over the fill: at
+    // nine pixels tall there is no room to punch one through the bar and still
+    // have it read as a bolt, and at a low charge it would sit on empty space.
+    if (charging) {
+        uint16_t bolt = batteryColor(percent);
+        int bx = x - 5, by = y + 1;
+        g.fillTriangle(bx + 3, by, bx, by + 4, bx + 3, by + 4, bolt);
+        g.fillTriangle(bx + 1, by + h - 2, bx + 4, by + 3, bx + 1, by + 3, bolt);
+    }
+
+    g.drawRoundRect(x, y, w, h, 2, c().border);
+    g.fillRect(x + w, y + (h - 3) / 2, 2, 3, c().border);      // terminal nub
+
+    const int inner = w - 4;
+    int fill = (inner * percent + 50) / 100;
+    // Keep a sliver at 1-2%, so "nearly flat" still reads as a battery with
+    // something in it rather than as an empty outline.
+    if (percent > 0 && fill < 1) fill = 1;
+    if (fill > 0) g.fillRect(x + 2, y + 2, fill, h - 4, batteryColor(percent));
 }
 
 // Icons are drawn from primitives rather than bitmaps: no flash cost, and they
@@ -223,14 +258,12 @@ void statusBar(const String& title, Icon id, uint16_t accent) {
 
     // Right cluster, laid out from the right edge inward.
     int rx = SCREEN_W - 3;
-    int batt = M5Cardputer.Power.getBatteryLevel();
-    if (batt >= 0) {
-        String b = String(batt) + "%";
-        rx -= (int)b.length() * 6;
-        g.setTextColor(batt < 20 ? c().bad : batt < 40 ? c().warn : c().dim);
-        g.setCursor(rx, 2);
-        g.print(b.c_str());
-        rx -= 4;
+    const hw::Battery& batt = hw::battery();
+    if (batt.known) {
+        const int bw = 20, bh = 9;
+        rx -= bw + 2;                                  // shell plus the nub
+        batteryGauge(rx, 1, bw, bh, batt.percent, batt.charging);
+        rx -= batt.charging ? 10 : 5;                  // room for the bolt
     }
     if (bt::active()) { rx -= 10; icon(rx, 1, Icon::Bluetooth,
                                       bt::connected() ? c().accent2 : c().dim); }

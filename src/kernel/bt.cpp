@@ -1,5 +1,6 @@
 #define US_KEYBOARD 1
 #include "bt.h"
+#include "hw.h"
 #include "store.h"
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -83,7 +84,9 @@ static void startKeyboardRole() {
     s_hid->hidInfo(0x00, 0x01);
     s_hid->reportMap((uint8_t*)REPORT_MAP, sizeof(REPORT_MAP));
     s_hid->startServices();
-    s_hid->setBatteryLevel(constrain(M5Cardputer.Power.getBatteryLevel(), 0, 100));
+    // The filtered value, not a raw ADC sample: a host that watches this would
+    // otherwise see the same ten-point swing the status bar used to.
+    s_hid->setBatteryLevel(constrain(hw::battery().percent, 0, 100));
 
     BLEAdvertising* adv = s_server->getAdvertising();
     adv->setAppearance(HID_KEYBOARD);
