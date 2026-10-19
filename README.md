@@ -293,6 +293,11 @@ even when the I2S port never came up, so a dead microphone passed every check
 and every recording came back empty. `audio::micReady()` asks
 `Mic.isRunning()` instead.
 
+## Sponsor
+
+CardputerOS is free and stays MIT-licensed. If it earns a place in your pocket,
+you can back it through [GitHub Sponsors](https://github.com/sponsors/urazalievf).
+
 ## Status
 
 v0.2 — thirteen apps, seven AI providers, editable themes, BLE, IR, Grove I2C.
