@@ -296,7 +296,8 @@ and every recording came back empty. `audio::micReady()` asks
 ## Sponsor
 
 CardputerOS is free and stays MIT-licensed. If it earns a place in your pocket,
-you can back it through [GitHub Sponsors](https://github.com/sponsors/urazalievf).
+you can back it through [GitHub Sponsors](https://github.com/sponsors/urazalievf) or
+[Patreon](https://www.patreon.com/furazaliev).
 
 ## Status
 
